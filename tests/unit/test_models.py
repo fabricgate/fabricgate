@@ -2920,3 +2920,36 @@ class TestVersionPatternsAsciiDigitsOnly:
         for value in self.NON_ASCII:
             with pytest.raises(ValidationError):
                 ShellDependency(name="ns/shell", version=f"={value}", sha256="a" * 64)
+
+
+class TestNamespaceUpdateRequest:
+    """NamespaceUpdateRequest: partial update of the display name and description."""
+
+    def test_one_field_is_enough(self) -> None:
+        from fabricgate.models.api.requests import NamespaceUpdateRequest
+
+        req = NamespaceUpdateRequest.model_validate({"description": ""})
+        assert (req.display_name, req.description) == (None, "")
+        assert NamespaceUpdateRequest.model_validate({"display_name": "Org"}).description is None
+
+    @pytest.mark.parametrize("body", [{}, {"display_name": None, "description": None}])
+    def test_rejects_no_field(self, body: dict[str, object]) -> None:
+        from fabricgate.models.api.requests import NamespaceUpdateRequest
+
+        with pytest.raises(ValidationError, match="display_name, description or both"):
+            NamespaceUpdateRequest.model_validate(body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"description": "<script>alert(1)</script>"},
+            {"description": "x" * 501},
+            {"display_name": "x" * 129},
+            {"name": "other", "description": "ok"},
+        ],
+    )
+    def test_rejects_invalid(self, body: dict[str, object]) -> None:
+        from fabricgate.models.api.requests import NamespaceUpdateRequest
+
+        with pytest.raises(ValidationError):
+            NamespaceUpdateRequest.model_validate(body)

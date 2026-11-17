@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import EmailStr, Field, field_validator
+from pydantic import EmailStr, Field, field_validator, model_validator
 
 from fabricgate.models.common import (
     FabricGateModel,
@@ -82,6 +82,31 @@ class NamespaceCreateRequest(FabricGateModel):
         if isinstance(v, str):
             return reject_unsafe_html(v)
         return v
+
+
+class NamespaceUpdateRequest(FabricGateModel):
+    """``PATCH /api/v1/namespaces/{ns}`` — change the display name, the description or both.
+
+    A field that is omitted or ``null`` is left as it is; at least one must be given.
+    An empty ``description`` clears it.
+    """
+
+    display_name: str | None = Field(default=None, max_length=128)
+    description: str | None = Field(default=None, max_length=500)
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def description_no_unsafe_html(cls, v: object) -> object:
+        """Reject HTML markup and JavaScript in the description field."""
+        if isinstance(v, str):
+            return reject_unsafe_html(v)
+        return v
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> NamespaceUpdateRequest:
+        if self.display_name is None and self.description is None:
+            raise ValueError("Give display_name, description or both")
+        return self
 
 
 # ---------------------------------------------------------------------------
