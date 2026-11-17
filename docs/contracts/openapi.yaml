@@ -1528,6 +1528,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      tags:
+      - namespaces
+      summary: Update Namespace
+      description: Update a namespace's display name and description. Requires namespace
+        owner/admin or platform admin.
+      operationId: update_namespace_api_v1_namespaces__namespace__patch
+      parameters:
+      - name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Namespace
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NamespaceUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/namespaces/{namespace}/verify:
     post:
       tags:
@@ -3906,6 +3947,31 @@ components:
       - total_downloads
       title: NamespaceTopDesign
       description: Top design entry in namespace statistics.
+    NamespaceUpdateRequest:
+      properties:
+        display_name:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Display Name
+        description:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Description
+      additionalProperties: false
+      type: object
+      title: NamespaceUpdateRequest
+      description: '``PATCH /api/v1/namespaces/{ns}`` — change the display name, the
+        description or both.
+
+
+        A field that is omitted or ``null`` is left as it is; at least one must be
+        given.
+
+        An empty ``description`` clears it.'
     PlatformAddResponse:
       properties:
         name:
