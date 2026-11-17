@@ -9,7 +9,7 @@
 
 FabricGate is a package registry for FPGA designs (bitstreams plus the metadata a runtime needs to load them). This repository contains the client side: the `fabricgate` CLI, the Python SDK, the shared data models, and the public API contracts. The hosted registry lives at `https://registry.fabricgate.dev`.
 
-> **Status: alpha (0.1.0).** The registry is being seeded with community PYNQ overlays. Interfaces marked *stable* in `docs/specs/` are kept backward compatible; everything else may still change before 1.0.
+> **Status: pre-1.0.** The registry lists a reference design and an index of community PYNQ overlays. Interfaces marked *stable* in `docs/specs/` are kept backward compatible; everything else may still change before 1.0.
 
 ## Install
 
@@ -25,16 +25,16 @@ HTTPS certificates are verified against the operating system's trust store, not 
 
 ```sh
 # 1. Find a design for your board
-fabricgate search --platform pynq-z2/pynq adder
+fabricgate search --platform tangnano9k/programmer hello
 
-# 2. Pull it (bitstream + hwh + manifest, digests verified on download)
-fabricgate pull example/adder-demo:1.0.0 --platform pynq-z2/pynq
+# 2. Pull it (bitstream + manifest, digests verified on download)
+fabricgate pull fabricgate/hello:1.0.0 --platform tangnano9k/programmer
 
-# 3. Load it with the runtime you already use
-python -c "from pynq import Overlay; ol = Overlay('adder-demo/adder.bit')"
+# 3. Write it to the board with the tool you already use
+openFPGALoader -b tangnano9k hello-1.0.0/hello.fs
 ```
 
-`example/adder-demo` is a placeholder name; run `fabricgate search` to see what is actually published. The `--platform` value is `<board>/<runtime>`; run `fabricgate pull --help` for the resolution rules, including the `generic-<device>` fallback.
+`fabricgate/hello` is the reference design, an LED counter for the Sipeed Tang Nano 9K; FabricGate does not write to the board itself. For a PYNQ board, pull with a platform such as `pynq-z2/pynq` and load the `.bit` with `pynq.Overlay`. Run `fabricgate search` to see what is published. The `--platform` value is `<board>/<runtime>`; run `fabricgate pull --help` for the resolution rules, including the `generic-<device>` fallback.
 
 ## What the CLI can do
 
@@ -85,14 +85,14 @@ The bundled Board DB (`src/fabricgate/data/board-db/official.yaml`) currently kn
 | `pico-ice` | iCE40UP5K | `nanopynq` (Phase 3, forward reference) |
 | `generic-xc7z020`, `generic-xczu7ev` | — | device-level fallback for boards not yet listed |
 
-Adding a board is a data change; see [CONTRIBUTING.md](CONTRIBUTING.md).
+A board that is not in this table, such as the Tang Nano 9K (`tangnano9k`), still works when a design publishes that exact `<board>/<runtime>` platform; only the `generic-<device>` fallback needs the board to be listed. Adding a board is a data change; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## SDK
 
 ```python
 from fabricgate.sdk import api
 
-result = api.pull("example/adder-demo:1.0.0", platform="pynq-z2/pynq")
+result = api.pull("fabricgate/hello:1.0.0", platform="tangnano9k/programmer")
 print(result.artifacts)
 ```
 
@@ -123,6 +123,6 @@ The registry server is operated as a hosted service and its implementation is no
 Every release is published from this repository via PyPI Trusted Publishing and carries a GitHub build-provenance attestation:
 
 ```sh
-pip download --no-deps fabricgate==0.1.0
-gh attestation verify fabricgate-0.1.0-py3-none-any.whl --repo harurun78/fabricgate
+pip download --no-deps fabricgate==0.6.0
+gh attestation verify fabricgate-0.6.0-py3-none-any.whl --repo harurun78/fabricgate
 ```
