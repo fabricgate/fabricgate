@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,7 @@ from fabricgate.client.auth import (
     save_credentials,
 )
 from fabricgate.client.publisher import (
+    MAX_NPQ_BYTES,
     PublishError,
     collect_artifacts,
     load_design_index,
@@ -1030,3 +1033,136 @@ def test_is_single_filename_refuses_control_characters(name: str) -> None:
     assert not is_single_filename(name)
     assert is_single_filename("design 1.bit")
     assert is_single_filename("回路.bit")
+
+
+# ============================================================================
+# publisher — nanopynq .npq check
+# ============================================================================
+
+_FS = b"gowin-fs-bitstream"
+
+
+def _npq(**overrides: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "format": "nanopynq-design/1",
+        "board": "tangnano9k",
+        "bitstream": {"file": "base.fs", "sha256": hashlib.sha256(_FS).hexdigest()},
+        "link": {"kind": "uart", "baudrate": 115200},
+        "design_id": "0xabf78d8c",
+        "ips": {"sys": {}},
+    }
+    data.update(overrides)
+    return data
+
+
+def _write_nanopynq_project(root: Path, npq: Any, *, bitstream_sha256: str | None = None) -> None:
+    """Write a tangnano9k/nanopynq project whose .npq is *npq* (JSON-encoded unless bytes)."""
+    platform_dir = root / "tangnano9k" / "nanopynq"
+    platform_dir.mkdir(parents=True)
+    (platform_dir / "base.fs").write_bytes(_FS)
+    npq_bytes = npq if isinstance(npq, bytes) else json.dumps(npq).encode()
+    (platform_dir / "base.npq").write_bytes(npq_bytes)
+    manifest = {
+        "runtime": "nanopynq",
+        "board": "tangnano9k",
+        "design_ref": "test-ns/blink:1.0.0",
+        "artifacts": {
+            "bitstream": {"file": "base.fs", "sha256": bitstream_sha256 or hashlib.sha256(_FS).hexdigest()},
+            "metadata": {"file": "base.npq", "sha256": hashlib.sha256(npq_bytes).hexdigest()},
+        },
+    }
+    (platform_dir / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    index = {
+        "schema": "fabricgate-index/v1",
+        "name": "test-ns/blink",
+        "version": "1.0.0",
+        "platforms": [{"platform": "tangnano9k/nanopynq", "digest": "sha256:" + "a" * 64}],
+    }
+    (root / "fabricgate-index.yaml").write_text(yaml.safe_dump(index))
+
+
+def _collect(root: Path, **kwargs: Any) -> dict[str, bytes]:
+    idx, _ = load_design_index(root)
+    return collect_artifacts(root, idx, **kwargs)
+
+
+def test_npq_check_passes_and_uploads_the_npq(tmp_path: Path) -> None:
+    _write_nanopynq_project(tmp_path, _npq())
+    files = _collect(tmp_path)
+    assert "platform:tangnano9k/nanopynq:artifact:base.fs" in files
+    assert "platform:tangnano9k/nanopynq:artifact:base.npq" in files
+
+
+@pytest.mark.parametrize(
+    "npq",
+    [
+        _npq(ips="not-an-object"),
+        {k: v for k, v in _npq().items() if k not in ("link", "design_id", "ips")},
+        _npq(format="nanopynq-design/2"),
+    ],
+    ids=["broken-ips", "only-checked-fields", "future-format"],
+)
+def test_npq_check_reads_only_its_four_points(tmp_path: Path, npq: dict[str, Any]) -> None:
+    """The rest of the .npq belongs to nanopynq, so push does not judge it."""
+    _write_nanopynq_project(tmp_path, npq)
+    _collect(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("npq", "message"),
+    [
+        (b"{not json", "is not valid JSON"),
+        (b"\xff\xfe", "is not valid JSON"),
+        (b"[]", "must be a JSON object"),
+        ({k: v for k, v in _npq().items() if k != "format"}, "format must be a string"),
+        (_npq(format=1), "format must be a string"),
+        (_npq(format="other/1"), "starting with 'nanopynq-design/'"),
+        (_npq(board="tangnano20k"), "board 'tangnano20k' does not match the manifest board 'tangnano9k'"),
+        (_npq(bitstream="base.fs"), "bitstream must be an object"),
+        (_npq(bitstream={"file": "other.fs", "sha256": hashlib.sha256(_FS).hexdigest()}), "bitstream.file"),
+        (_npq(bitstream={"file": "base.fs", "sha256": "0" * 64}), "bitstream.sha256"),
+    ],
+    ids=[
+        "not-json",
+        "not-utf8",
+        "array",
+        "no-format",
+        "format-int",
+        "format-prefix",
+        "board",
+        "bitstream-str",
+        "file",
+        "sha256",
+    ],
+)
+def test_npq_check_rejects(tmp_path: Path, npq: Any, message: str) -> None:
+    _write_nanopynq_project(tmp_path, npq)
+    with pytest.raises(PublishError, match=re.escape(message)):
+        _collect(tmp_path)
+
+
+def test_npq_check_compares_with_the_filled_placeholder(tmp_path: Path) -> None:
+    """build writes a placeholder bitstream sha256; the .npq holds the real one, which push fills in."""
+    _write_nanopynq_project(tmp_path, _npq(), bitstream_sha256="a" * 64)
+    files = _collect(tmp_path)
+    manifest = yaml.safe_load(files["platform:tangnano9k/nanopynq:manifest"])
+    assert manifest["artifacts"]["bitstream"]["sha256"] == hashlib.sha256(_FS).hexdigest()
+
+
+def test_npq_check_rejects_an_oversized_file_before_reading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_nanopynq_project(tmp_path, b" " * (MAX_NPQ_BYTES + 1))
+    original = Path.read_bytes
+
+    def _read_bytes(self: Path) -> bytes:
+        assert self.suffix != ".npq", "the oversized .npq was read"
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+    with pytest.raises(PublishError, match="larger than"):
+        _collect(tmp_path)
+
+
+def test_npq_cannot_be_published_by_url(tmp_path: Path) -> None:
+    _write_nanopynq_project(tmp_path, _npq())
+    with pytest.raises(PublishError, match="cannot be published by URL"):
+        _collect(tmp_path, artifact_urls={"base.npq": "https://example.com/base.npq"})
