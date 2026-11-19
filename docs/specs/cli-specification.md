@@ -312,7 +312,7 @@ Published: myns/my-design:1.0.0 (1 platform)
 
 `custom-*` でない通常ボード、`design_portability: board-specific`、または `io-constrained` の場合はプロンプト不要。
 
-**nanopynq の `.npq`:** `nanopynq` のプラットフォームでは、`artifacts.metadata` の `.npq` が manifest とビットストリームに対応しているかを、送る前に確かめる（platform-manifest-schema.md §5.2: 1 MiB 以下の JSON オブジェクトで、`format` が `nanopynq-design/` で始まり、`board` と `bitstream.file` / `bitstream.sha256` が manifest と一致する。sha256 はプレースホルダーを置き換えた後の値と比べる）。それ以外の項目は見ない。合わなければ何も送らずに exit 3。`.npq` は `--artifact-url` で公開できない（exit 3）。
+**nanopynq の `.npq`:** `nanopynq` のプラットフォームでは、`artifacts.metadata` の `.npq` が manifest とビットストリームに対応しているかを、送る前に確かめる（platform-manifest-schema.md §5.2: 1 MiB 以下の UTF-8 の JSON オブジェクトで、`format` が `nanopynq-design/` で始まり、`board` と `bitstream.file` / `bitstream.sha256` が manifest と一致する。先頭の BOM は許す。sha256 はプレースホルダーを置き換えた後の値と比べる）。それ以外の項目は見ない。合わなければ何も送らずに exit 3。`.npq` は `--artifact-url` で公開できない（exit 3）。
 
 **プレースホルダー SHA-256:**
 

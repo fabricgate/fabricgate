@@ -601,10 +601,11 @@ interfaces: [ ... ]
 - The `.npq` plays the role of `.hwh` for `pynq`: its format is defined by nanopynq (its `format` field, e.g.
   `nanopynq-design/1`, names the revision), and FabricGate does not interpret it. A `metadata` file name that does
   not end in `.npq` gets a warning, not an error.
-- `fabricgate push` checks only that the `.npq` belongs to this manifest and bitstream: it is a JSON object of at
-  most 1 MiB, `format` is a string starting with `nanopynq-design/`, `board` equals the manifest `board`, and
-  `bitstream.file` / `bitstream.sha256` equal the manifest's `artifacts.bitstream`. Other fields (`link`,
-  `design_id`, `ips`, ...) are not checked. The `.npq` cannot be published by URL (`--artifact-url`).
+- `fabricgate push` checks only that the `.npq` belongs to this manifest and bitstream: it is a UTF-8 JSON object
+  (a leading BOM is allowed) of at most 1 MiB, `format` is a string starting with `nanopynq-design/`, `board`
+  equals the manifest `board`, and `bitstream.file` / `bitstream.sha256` equal the manifest's
+  `artifacts.bitstream`. Other fields (`link`, `design_id`, `ips`, ...) are not checked. The `.npq` cannot be
+  published by URL (`--artifact-url`).
 - No `.dtbo` and no kernel modules.
 - Until 0.6.0 the manifest itself carried `ips`, `transport`, `mtu` and `mcu`. These are removed; a manifest that
   still has them and no `artifacts.metadata` is rejected with a message naming the migration.

@@ -67,7 +67,7 @@ def check_npq(content: bytes, *, name: str, board: str, bitstream_file: str, bit
     so checking more would tie this contract to each revision of it.
     """
     try:
-        data = json.loads(content)
+        data = json.loads(content.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise PublishError(f"{name} is not valid JSON: {exc}") from None
     if not isinstance(data, dict):

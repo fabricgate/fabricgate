@@ -1108,11 +1108,16 @@ def test_npq_check_reads_only_its_four_points(tmp_path: Path, npq: dict[str, Any
     _collect(tmp_path)
 
 
+def test_npq_check_accepts_a_utf8_bom(tmp_path: Path) -> None:
+    _write_nanopynq_project(tmp_path, b"\xef\xbb\xbf" + json.dumps(_npq()).encode())
+    _collect(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("npq", "message"),
     [
         (b"{not json", "is not valid JSON"),
-        (b"\xff\xfe", "is not valid JSON"),
+        (json.dumps(_npq()).encode("utf-16"), "is not valid JSON"),
         (b"[]", "must be a JSON object"),
         (b'{"a":' + b"[" * 200_000 + b"]" * 200_000 + b"}", "is not valid JSON"),
         ({k: v for k, v in _npq().items() if k != "format"}, "format must be a string"),
@@ -1125,7 +1130,7 @@ def test_npq_check_reads_only_its_four_points(tmp_path: Path, npq: dict[str, Any
     ],
     ids=[
         "not-json",
-        "not-utf8",
+        "utf16",
         "array",
         "nested-too-deeply",
         "no-format",
