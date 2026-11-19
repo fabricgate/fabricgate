@@ -1097,6 +1097,15 @@ class TestBuildNpq:
         result = _invoke_npq_build(tmp_path, monkeypatch, npq)
         assert result.exit_code == 3, result.output
 
+    def test_board_with_escape_sequence_is_not_printed_raw(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        npq = _write_npq(tmp_path / "gowin", board="tang\x1b]0;PWNED\x07nano")
+        result = _invoke_npq_build(tmp_path, monkeypatch, npq)
+        assert result.exit_code == 3, result.output
+        assert "\x1b" not in result.output
+        assert not (tmp_path / "base").exists()
+
     def test_npq_and_hwh_are_exclusive(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         npq = _write_npq(tmp_path / "gowin")
         hwh = tmp_path / "gowin" / "design.hwh"

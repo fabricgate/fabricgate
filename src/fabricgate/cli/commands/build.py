@@ -13,6 +13,7 @@ import yaml
 from pydantic import TypeAdapter, ValidationError
 
 from fabricgate.cli.exit_codes import exit_with
+from fabricgate.cli.formatting import sanitize
 from fabricgate.client.errors import FailureKind
 from fabricgate.client.publisher import MAX_NPQ_BYTES, PublishError, check_npq
 from fabricgate.client.validator import is_single_filename, sha256_hex
@@ -280,7 +281,7 @@ def _build_nanopynq(
     except Exception as exc:
         click.echo(f"Error: Board DB load failed: {exc}", err=True)
         exit_with(FailureKind.INFRA)
-    click.echo(f"  board: {board}, bitstream: {bitstream_file}")
+    click.echo(f"  board: {sanitize(board)}, bitstream: {bitstream_file}")
 
     click.echo("")
     design_name, version, runtime, description, tag_list = _prompt_design(namespace, semver, tags, runtime="nanopynq")
