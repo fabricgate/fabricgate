@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from fabricgate._version import __version__
@@ -41,6 +42,7 @@ from fabricgate.models.platform_manifest import (
 )
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
+_NPQ_REF = {"file": "blink.npq", "sha256": "33" * 32}
 
 
 # ---------------------------------------------------------------------------
@@ -925,16 +927,15 @@ class TestBitstreamExtensionWarning:
                     "file": "blink.bin",
                     "sha256": "2233445522334455223344552233445522334455223344552233445522334455",
                 },
+                "metadata": _NPQ_REF,
             },
-            "transport": "spi",
-            "mtu": 1024,
         }
         with caplog.at_level(logging.WARNING, logger=self._LOGGER):
             NanopynqManifest.model_validate(data)
         assert caplog.text == ""
 
     def test_nanopynq_bit_warns_but_validates(self, caplog):
-        """§5.2: nanopynq's format is `.bin`, not `.bit` — `.bit` warns (still validates)."""
+        """§5.2: nanopynq's formats are `.bin` / `.fs`, not `.bit` — `.bit` warns (still validates)."""
         import logging
 
         data = {
@@ -947,9 +948,8 @@ class TestBitstreamExtensionWarning:
                     "file": "blink.bit",
                     "sha256": "2233445522334455223344552233445522334455223344552233445522334455",
                 },
+                "metadata": _NPQ_REF,
             },
-            "transport": "spi",
-            "mtu": 1024,
         }
         with caplog.at_level(logging.WARNING, logger=self._LOGGER):
             m = NanopynqManifest.model_validate(data)
@@ -1020,6 +1020,18 @@ class TestProgrammerManifest:
         assert isinstance(m, ProgrammerManifest)
 
 
+def _nanopynq_manifest_data() -> dict:
+    return {
+        "runtime": "nanopynq",
+        "board": "tangnano9k",
+        "design_ref": "fabricgate/blink:1.0.0",
+        "artifacts": {
+            "bitstream": {"file": "blink.fs", "sha256": "22" * 32},
+            "metadata": {"file": "blink.npq", "sha256": "33" * 32},
+        },
+    }
+
+
 class TestNanopynqManifest:
     def test_valid(self):
         data = {
@@ -1032,13 +1044,51 @@ class TestNanopynqManifest:
                     "file": "blink.bin",
                     "sha256": "2233445522334455223344552233445522334455223344552233445522334455",
                 },
+                "metadata": _NPQ_REF,
             },
-            "transport": "spi",
-            "mtu": 1024,
         }
         m = NanopynqManifest.model_validate(data)
-        assert m.transport == "spi"
-        assert m.mtu == 1024
+        assert m.artifacts.metadata.file == "blink.npq"
+
+    def test_metadata_is_required(self):
+        data = _nanopynq_manifest_data()
+        del data["artifacts"]["metadata"]
+        with pytest.raises(ValidationError, match="metadata"):
+            parse_platform_manifest(yaml.safe_dump(data))
+
+    @pytest.mark.parametrize("legacy", [{"transport": "spi", "mtu": 1024}, {"ips": {}}, {"mcu": "rp2040"}])
+    def test_legacy_layout_names_the_migration(self, legacy):
+        """A manifest in the layout before .npq is not silently accepted with its fields dropped."""
+        data = _nanopynq_manifest_data()
+        del data["artifacts"]["metadata"]
+        data.update(legacy)
+        with pytest.raises(ValidationError, match=r"now declares the design's \.npq file as artifacts\.metadata"):
+            parse_platform_manifest(yaml.safe_dump(data))
+
+    def test_legacy_fields_beside_metadata_are_ignored(self):
+        data = _nanopynq_manifest_data()
+        data.update({"transport": "spi", "mtu": 1024})
+        m = NanopynqManifest.model_validate(data)
+        assert not hasattr(m, "transport")
+
+    def test_fs_bitstream_no_warning(self, caplog):
+        import logging
+
+        data = _nanopynq_manifest_data()
+        data["artifacts"]["bitstream"]["file"] = "base.fs"
+        with caplog.at_level(logging.WARNING, logger="fabricgate.models.platform_manifest"):
+            NanopynqManifest.model_validate(data)
+        assert caplog.text == ""
+
+    def test_metadata_without_npq_extension_warns_but_validates(self, caplog):
+        import logging
+
+        data = _nanopynq_manifest_data()
+        data["artifacts"]["metadata"]["file"] = "blink.json"
+        with caplog.at_level(logging.WARNING, logger="fabricgate.models.platform_manifest"):
+            m = NanopynqManifest.model_validate(data)
+        assert m.artifacts.metadata.file == "blink.json"
+        assert "'.npq'" in caplog.text
 
     def test_shell_dependency_not_allowed_with_non_partial(self):
         """bitstream_type != 'partial' かつ shell_dependency がある → ValidationError (line 305)。"""
@@ -1053,9 +1103,8 @@ class TestNanopynqManifest:
                     "file": "blink.bin",
                     "sha256": "2233445522334455223344552233445522334455223344552233445522334455",
                 },
+                "metadata": _NPQ_REF,
             },
-            "transport": "spi",
-            "mtu": 1024,
             "shell_dependency": {"name": "acme/shell", "version": "=1.0.0", "sha256": "ab" * 32},
         }
         with pytest.raises(ValidationError, match="must not be set"):
@@ -1904,9 +1953,7 @@ class TestManifestPRFields:
             "runtime": "nanopynq",
             "board": "pico-ice",
             "design_ref": "fabricgate/blink:1.0.0",
-            "artifacts": {"bitstream": {"file": "blink.bin", "sha256": "ff" * 32}},
-            "transport": "spi",
-            "mtu": 256,
+            "artifacts": {"bitstream": {"file": "blink.bin", "sha256": "ff" * 32}, "metadata": _NPQ_REF},
             "dependencies": [{"name": f"acme/dep-{i}", "version": "*"} for i in range(20)],
         }
         m = NanopynqManifest.model_validate(data)
@@ -1919,9 +1966,7 @@ class TestManifestPRFields:
             "runtime": "nanopynq",
             "board": "pico-ice",
             "design_ref": "fabricgate/blink:1.0.0",
-            "artifacts": {"bitstream": {"file": "blink.bin", "sha256": "ff" * 32}},
-            "transport": "spi",
-            "mtu": 256,
+            "artifacts": {"bitstream": {"file": "blink.bin", "sha256": "ff" * 32}, "metadata": _NPQ_REF},
             "dependencies": [{"name": f"acme/dep-{i}", "version": "*"} for i in range(21)],
         }
         with pytest.raises(ValidationError):
@@ -1983,9 +2028,7 @@ class TestManifestPRFields:
             "runtime": "nanopynq",
             "board": "pico-ice",
             "design_ref": "fabricgate/blink:1.0.0",
-            "artifacts": {"bitstream": {"file": "blink.bin", "sha256": "22" * 32}},
-            "transport": "spi",
-            "mtu": 1024,
+            "artifacts": {"bitstream": {"file": "blink.bin", "sha256": "22" * 32}, "metadata": _NPQ_REF},
             "bitstream_type": "partial",
             "shell_dependency": {"name": "acme/shell", "version": "=2.0.0", "sha256": "ab" * 32},
         }
@@ -1998,9 +2041,7 @@ class TestManifestPRFields:
             "runtime": "nanopynq",
             "board": "pico-ice",
             "design_ref": "fabricgate/blink:1.0.0",
-            "artifacts": {"bitstream": {"file": "blink.bin", "sha256": "22" * 32}},
-            "transport": "spi",
-            "mtu": 1024,
+            "artifacts": {"bitstream": {"file": "blink.bin", "sha256": "22" * 32}, "metadata": _NPQ_REF},
             "bitstream_type": "partial",
         }
         with pytest.raises(ValidationError, match="shell_dependency is required"):

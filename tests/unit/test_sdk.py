@@ -6288,3 +6288,74 @@ def test_search_stops_at_a_short_page_before_total(monkeypatch: pytest.MonkeyPat
     results = sdk_api.search("x", limit=250)
     assert len(results) == 90
     assert _ShortPages.calls == [(1, 100)]
+
+
+_NPQ_FS = b"gowin-fs-bitstream"
+_NPQ_JSON = b'{"format": "nanopynq-design/1", "board": "tangnano9k"}'
+
+
+class _FakeNanopynqRegistryClient(_FakeRegistryClient):
+    """Fake that publishes one tangnano9k/nanopynq platform: a .fs bitstream and its .npq."""
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        self.manifest_bytes = "\n".join(
+            [
+                "runtime: nanopynq",
+                "board: tangnano9k",
+                "design_ref: test-ns/blink:1.0.0",
+                "artifacts:",
+                "  bitstream:",
+                "    file: base.fs",
+                f"    sha256: {hashlib.sha256(_NPQ_FS).hexdigest()}",
+                "  metadata:",
+                "    file: base.npq",
+                f"    sha256: {hashlib.sha256(_NPQ_JSON).hexdigest()}",
+            ]
+        ).encode("utf-8")
+
+    def get_version(self, namespace: str, design: str, version: str) -> VersionDetailResponse:
+        detail = super().get_version(namespace, design, version).model_dump(by_alias=True)
+        detail["platforms"] = [
+            {"platform": "tangnano9k/nanopynq", "digest": f"sha256:{hashlib.sha256(self.manifest_bytes).hexdigest()}"}
+        ]
+        return VersionDetailResponse.model_validate(detail)
+
+    def download_artifact(self, *_args) -> bytes:
+        return {"base.fs": _NPQ_FS, "base.npq": _NPQ_JSON}[_args[-1]]
+
+
+def test_pull_nanopynq_fetches_bitstream_and_npq(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The .npq is an ordinary artifact: pulled next to the .fs and checked by verify."""
+    _patch_all_rc(monkeypatch, _FakeNanopynqRegistryClient)
+
+    sdk_api.pull("test-ns/blink:1.0.0", platform="tangnano9k/nanopynq", output=tmp_path, cache_dir=tmp_path / "c")
+
+    assert sorted(p.name for p in tmp_path.iterdir() if p.is_file()) == ["base.fs", "base.npq", "manifest.yaml"]
+    assert (tmp_path / "base.npq").read_bytes() == _NPQ_JSON
+    result = sdk_api.verify(tmp_path, offline=True)
+    assert sorted(item.file for item in result.artifacts) == ["base.fs", "base.npq"]
+    assert all(item.verified for item in result.artifacts)
+
+    (tmp_path / "base.npq").write_bytes(b"{}")
+    result = sdk_api.verify(tmp_path, offline=True)
+    assert [item.file for item in result.artifacts if not item.verified] == ["base.npq"]
+
+
+def test_push_legacy_nanopynq_manifest_names_the_migration(tmp_path: Path) -> None:
+    """A manifest still carrying ips / transport / mtu fails before any upload, with the migration in the message."""
+    platform_dir = tmp_path / "pico-ice" / "nanopynq"
+    platform_dir.mkdir(parents=True)
+    (platform_dir / "blink.bin").write_bytes(b"bits")
+    (platform_dir / "manifest.yaml").write_text(
+        "runtime: nanopynq\nboard: pico-ice\ndesign_ref: test-ns/blink:1.0.0\n"
+        f"artifacts:\n  bitstream:\n    file: blink.bin\n    sha256: {hashlib.sha256(b'bits').hexdigest()}\n"
+        "transport: spi\nmtu: 1024\nips: {}\n"
+    )
+    (tmp_path / "fabricgate-index.yaml").write_text(
+        "schema: fabricgate-index/v1\nname: test-ns/blink\nversion: 1.0.0\n"
+        f"platforms:\n  - platform: pico-ice/nanopynq\n    digest: sha256:{'a' * 64}\n"
+    )
+
+    with pytest.raises(sdk_api.SDKError, match=r"artifacts\.metadata") as exc_info:
+        sdk_api.push(tmp_path, registry="http://127.0.0.1:9/api/v1", token="unused")
+    assert exc_info.value.code == ExitKind.INVALID
