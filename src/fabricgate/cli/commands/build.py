@@ -1,7 +1,8 @@
-"""fabricgate build command — generate Platform Manifest and Design Index from a HWH file."""
+"""fabricgate build command — generate Platform Manifest and Design Index from a HWH or .npq file."""
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from dataclasses import dataclass
@@ -12,7 +13,10 @@ import yaml
 from pydantic import TypeAdapter, ValidationError
 
 from fabricgate.cli.exit_codes import exit_with
+from fabricgate.cli.formatting import sanitize
 from fabricgate.client.errors import FailureKind
+from fabricgate.client.publisher import MAX_NPQ_BYTES, PublishError, check_npq
+from fabricgate.client.validator import is_single_filename, sha256_hex
 from fabricgate.models.board_db import BoardDb
 from fabricgate.models.common import DesignName, SemVer
 from fabricgate.models.design_index import DesignIndex
@@ -22,6 +26,7 @@ from fabricgate.sdk.hwh_parser import HwhInfo, HwhParseError, ParsedInterface, f
 # Artifact file names the manifest stub declares, next to manifest.yaml.
 _BITSTREAM_FILE = "design.bit"
 _HWH_FILE = "design.hwh"
+_MANIFEST_FILE = "manifest.yaml"
 # Of the runtimes build offers, only pynq's manifest has an hwh artifact.
 _HWH_RUNTIME = "pynq"
 
@@ -104,7 +109,9 @@ def _make_manifest_stub(
     device_family: str | None,
     design_ref: str,
     interfaces: list[Interface],
-    design_portability: str,
+    design_portability: str | None,
+    bitstream_file: str = _BITSTREAM_FILE,
+    npq_file: str | None = None,
 ) -> str:
     """Return a YAML string for a platform manifest stub.
 
@@ -112,9 +119,11 @@ def _make_manifest_stub(
     with the hashes of the files it uploads.
     """
     placeholder = "a" * 64
-    artifacts = {"bitstream": {"file": _BITSTREAM_FILE, "sha256": placeholder}}
+    artifacts = {"bitstream": {"file": bitstream_file, "sha256": placeholder}}
     if runtime == _HWH_RUNTIME:
         artifacts["hwh"] = {"file": _HWH_FILE, "sha256": placeholder}
+    if npq_file is not None:
+        artifacts["metadata"] = {"file": npq_file, "sha256": placeholder}
     data: dict[str, object] = {
         "schema": "fabricgate-platform/v1",
         "runtime": runtime,
@@ -124,7 +133,8 @@ def _make_manifest_stub(
     }
     if device_family:
         data["device_family"] = device_family
-    data["design_portability"] = design_portability
+    if design_portability:
+        data["design_portability"] = design_portability
     if interfaces:
         data["interfaces"] = [
             {k: v for k, v in {"name": i.name, "type": i.type, "base": i.base}.items() if v is not None}
@@ -201,6 +211,13 @@ def _render_stubs(inputs: _BuildInputs) -> tuple[str, str]:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Explicit path to .hwh file (required when multiple .hwh files are found).",
 )
+@click.option(
+    "--npq",
+    "npq_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Build a nanopynq platform from this .npq file and the bitstream it names (no HWH is read).",
+)
 def build_cmd(
     directory: Path,
     namespace: str | None,
@@ -209,12 +226,112 @@ def build_cmd(
     dry_run: bool,
     output_dir: Path | None,
     hwh_path_opt: Path | None,
+    npq_path: Path | None,
 ) -> None:
-    """Generate Platform Manifest and Design Index from a Vivado HWH file."""
+    """Generate Platform Manifest and Design Index from a Vivado HWH file or a nanopynq .npq file."""
+    if npq_path is not None:
+        if hwh_path_opt is not None:
+            raise click.UsageError("--npq and --hwh cannot be used together")
+        _build_nanopynq(npq_path, namespace=namespace, semver=semver, tags=tags, output_dir=output_dir, dry_run=dry_run)
+        return
     inputs = _collect_inputs(directory, hwh_path_opt, namespace=namespace, semver=semver, tags=tags)
     index_yaml, manifest_yaml = _render_stubs(inputs)
     _check_pushable(index_yaml, manifest_yaml)
-    _write_outputs(inputs, index_yaml, manifest_yaml, output_dir=output_dir, dry_run=dry_run)
+    copies = {_HWH_FILE: inputs.hwh_path} if inputs.runtime == _HWH_RUNTIME else {}
+    _write_outputs(
+        inputs.design_name,
+        inputs.platform_id,
+        index_yaml,
+        manifest_yaml,
+        copies=copies,
+        missing_bitstream=_BITSTREAM_FILE,
+        output_dir=output_dir,
+        dry_run=dry_run,
+    )
+
+
+def _build_nanopynq(
+    npq_path: Path,
+    *,
+    namespace: str | None,
+    semver: str | None,
+    tags: str | None,
+    output_dir: Path | None,
+    dry_run: bool,
+) -> None:
+    """Build a nanopynq platform: board and bitstream come from the .npq, which sits next to the bitstream."""
+    board, bitstream_file = _read_npq_target(npq_path)
+    bitstream_path = npq_path.parent / bitstream_file
+    if not bitstream_path.is_file():
+        click.echo(f"Error: {npq_path.name} names bitstream {bitstream_file}, not found in {npq_path.parent}", err=True)
+        exit_with(FailureKind.INVALID)
+    try:
+        check_npq(
+            npq_path.read_bytes(),
+            name=npq_path.name,
+            board=board,
+            bitstream_file=bitstream_file,
+            bitstream_sha256=sha256_hex(bitstream_path),
+        )
+    except PublishError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        exit_with(FailureKind.INVALID)
+    try:
+        entry = BoardDb.load().lookup(board)
+    except Exception as exc:
+        click.echo(f"Error: Board DB load failed: {exc}", err=True)
+        exit_with(FailureKind.INFRA)
+    click.echo(f"  board: {sanitize(board)}, bitstream: {bitstream_file}")
+
+    click.echo("")
+    design_name, version, runtime, description, tag_list = _prompt_design(namespace, semver, tags, runtime="nanopynq")
+    manifest_yaml = _make_manifest_stub(
+        runtime=runtime,
+        board=board,
+        device_family=entry.device_family if entry else None,
+        design_ref=f"{design_name}:{version}",
+        interfaces=[],
+        design_portability=None,
+        bitstream_file=bitstream_file,
+        npq_file=npq_path.name,
+    )
+    platform_id = f"{board}/{runtime}"
+    index_yaml = _make_index_stub(
+        design_name=design_name, version=version, summary=description, tags=tag_list, platform_id=platform_id
+    )
+    _check_pushable(index_yaml, manifest_yaml)
+    _write_outputs(
+        design_name,
+        platform_id,
+        index_yaml,
+        manifest_yaml,
+        copies={bitstream_file: bitstream_path, npq_path.name: npq_path},
+        missing_bitstream=None,
+        output_dir=output_dir,
+        dry_run=dry_run,
+    )
+
+
+def _read_npq_target(npq_path: Path) -> tuple[str, str]:
+    """Return ``(board, bitstream file name)`` from the .npq, exiting 3 if they are unusable."""
+    try:
+        if npq_path.stat().st_size > MAX_NPQ_BYTES:
+            raise ValueError(f"larger than {MAX_NPQ_BYTES} bytes")
+        data = json.loads(npq_path.read_bytes())
+    except (OSError, ValueError, RecursionError) as exc:
+        click.echo(f"Error: Cannot read {npq_path}: {exc}", err=True)
+        exit_with(FailureKind.INVALID)
+    board = data.get("board") if isinstance(data, dict) else None
+    bitstream = data.get("bitstream") if isinstance(data, dict) else None
+    bitstream_file = bitstream.get("file") if isinstance(bitstream, dict) else None
+    if not isinstance(board, str) or not isinstance(bitstream_file, str) or not is_single_filename(bitstream_file):
+        click.echo(f"Error: {npq_path} needs a board and a bitstream.file (a file name next to it)", err=True)
+        exit_with(FailureKind.INVALID)
+    if _MANIFEST_FILE in (npq_path.name, bitstream_file):
+        # Both are copied next to the generated manifest and would overwrite it.
+        click.echo(f"Error: neither the .npq nor its bitstream can be named {_MANIFEST_FILE}", err=True)
+        exit_with(FailureKind.INVALID)
+    return board, bitstream_file
 
 
 @dataclass(frozen=True)
@@ -250,22 +367,7 @@ def _collect_inputs(
 
     # --- Interactive inputs ---
     click.echo("")
-
-    ns_prompt = f"{namespace}/" if namespace else ""
-    design_name: str = click.prompt(
-        f"Design name [{ns_prompt}]",
-        default=f"{ns_prompt}my-design",
-        value_proc=lambda raw: _to_design_name(raw, namespace),
-    )
-
-    version: str = click.prompt("Version", default=semver or "0.1.0", value_proc=_to_version)
-
-    runtime = _prompt_runtime()
-
-    description = click.prompt("Description", default="", show_default=False).strip() or None
-
-    raw_tags = tags or click.prompt("Tags (comma-separated, optional)", default="", show_default=False)
-    tag_list = [t.strip() for t in raw_tags.split(",") if t.strip()] if raw_tags else []
+    design_name, version, runtime, description, tag_list = _prompt_design(namespace, semver, tags, runtime=None)
 
     return _BuildInputs(
         hwh_path=hwh_path,
@@ -278,6 +380,29 @@ def _collect_inputs(
         description=description,
         tags=tag_list,
     )
+
+
+def _prompt_design(
+    namespace: str | None, semver: str | None, tags: str | None, *, runtime: str | None
+) -> tuple[str, str, str, str | None, list[str]]:
+    """Ask for ``(design_name, version, runtime, description, tags)``; *runtime*, when given, is not asked."""
+    ns_prompt = f"{namespace}/" if namespace else ""
+    design_name: str = click.prompt(
+        f"Design name [{ns_prompt}]",
+        default=f"{ns_prompt}my-design",
+        value_proc=lambda raw: _to_design_name(raw, namespace),
+    )
+
+    version: str = click.prompt("Version", default=semver or "0.1.0", value_proc=_to_version)
+
+    if runtime is None:
+        runtime = _prompt_runtime()
+
+    description = click.prompt("Description", default="", show_default=False).strip() or None
+
+    raw_tags = tags or click.prompt("Tags (comma-separated, optional)", default="", show_default=False)
+    tag_list = [t.strip() for t in raw_tags.split(",") if t.strip()] if raw_tags else []
+    return design_name, version, runtime, description, tag_list
 
 
 def _to_design_name(raw: str, namespace: str | None) -> str:
@@ -424,39 +549,43 @@ def _choose_board(hwh_info: HwhInfo) -> tuple[str, str | None]:
 
 
 def _write_outputs(
-    inputs: _BuildInputs,
+    design_name: str,
+    platform_id: str,
     index_yaml: str,
     manifest_yaml: str,
     *,
+    copies: dict[str, Path],
+    missing_bitstream: str | None,
     output_dir: Path | None,
     dry_run: bool,
 ) -> None:
-    design_slug = inputs.design_name.split("/")[-1] if "/" in inputs.design_name else inputs.design_name
+    """Write the index and manifest; *copies* maps a file name next to the manifest to its source."""
+    design_slug = design_name.split("/")[-1] if "/" in design_name else design_name
     out_root = output_dir if output_dir is not None else Path(design_slug)
     # push reads <project>/<board_id>/<runtime>/manifest.yaml
-    manifest_path = out_root / inputs.board_id / inputs.runtime / "manifest.yaml"
+    manifest_path = out_root / platform_id / "manifest.yaml"
     index_path = out_root / "fabricgate-index.yaml"
-    # Only a manifest that declares the hwh artifact needs the HWH next to it.
-    hwh_path = manifest_path.parent / _HWH_FILE if inputs.runtime == _HWH_RUNTIME else None
+    copy_paths = [manifest_path.parent / name for name in copies]
 
     click.echo("\nGenerated:")
     if dry_run:
         click.echo(f"  (dry-run) {index_path}")
         click.echo(f"  (dry-run) {manifest_path}")
-        if hwh_path is not None:
-            click.echo(f"  (dry-run) {hwh_path}")
+        for path in copy_paths:
+            click.echo(f"  (dry-run) {path}")
         click.echo("\n--- fabricgate-index.yaml ---")
         click.echo(index_yaml)
-        click.echo(f"--- {inputs.platform_id}/manifest.yaml ---")
+        click.echo(f"--- {platform_id}/manifest.yaml ---")
         click.echo(manifest_yaml)
         return
 
     try:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(manifest_yaml, encoding="utf-8")
-        # push uploads the HWH from next to the manifest, under the name the manifest declares.
-        if hwh_path is not None and inputs.hwh_path.resolve() != hwh_path.resolve():
-            shutil.copyfile(inputs.hwh_path, hwh_path)
+        # push uploads each artifact from next to the manifest, under the name the manifest declares.
+        for source, dest in zip(copies.values(), copy_paths, strict=True):
+            if source.resolve() != dest.resolve():
+                shutil.copyfile(source, dest)
         index_path.write_text(index_yaml, encoding="utf-8")
     except OSError as exc:
         click.echo(f"Error: Write failed: {exc}", err=True)
@@ -464,16 +593,17 @@ def _write_outputs(
 
     click.echo(f"  {index_path}  ✓")
     click.echo(f"  {manifest_path}  ✓")
-    if hwh_path is not None:
-        click.echo(f"  {hwh_path}  ✓")
-    click.echo(f"\nNote: Copy the bitstream to {manifest_path.parent / _BITSTREAM_FILE} before publishing.")
+    for path in copy_paths:
+        click.echo(f"  {path}  ✓")
+    if missing_bitstream is not None:
+        click.echo(f"\nNote: Copy the bitstream to {manifest_path.parent / missing_bitstream} before publishing.")
     click.echo(f"Run `fabricgate push {out_root}/` to publish.")
 
 
 def _prompt_runtime() -> str:
     result: str = click.prompt(
         "Runtime",
-        # Not nanopynq: its manifest needs transport and mtu, which an HWH does not give.
+        # nanopynq is built from a .npq (--npq), not from an HWH.
         type=click.Choice(["pynq", "linux-fpgamgr"]),
         default="pynq",
     )

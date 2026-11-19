@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ import yaml
 
 from fabricgate.client.validator import artifact_refs, is_single_filename, sha256_digest, sha256_hex
 from fabricgate.models.design_index import DesignIndex
-from fabricgate.models.platform_manifest import PlatformManifest, parse_platform_manifest
+from fabricgate.models.platform_manifest import NanopynqManifest, PlatformManifest, parse_platform_manifest
 
 
 def _is_placeholder_sha256(sha256: str) -> bool:
@@ -54,6 +55,39 @@ def _manifest_digest(manifest: bytes) -> str:
 
 class PublishError(Exception):
     """Raised when a push package cannot be assembled."""
+
+
+MAX_NPQ_BYTES = 1024 * 1024
+
+
+def check_npq(content: bytes, *, name: str, board: str, bitstream_file: str, bitstream_sha256: str) -> None:
+    """Check that the nanopynq design file *content* belongs to this manifest and bitstream.
+
+    Only these top-level fields are read; the rest of the format belongs to nanopynq,
+    so checking more would tie this contract to each revision of it.
+    """
+    try:
+        data = json.loads(content.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise PublishError(f"{name} is not valid JSON: {exc}") from None
+    if not isinstance(data, dict):
+        raise PublishError(f"{name} must be a JSON object")
+    fmt = data.get("format")
+    if not isinstance(fmt, str) or not fmt.startswith("nanopynq-design/"):
+        raise PublishError(f"{name}: format must be a string starting with 'nanopynq-design/', got {fmt!r}")
+    if data.get("board") != board:
+        raise PublishError(f"{name}: board {data.get('board')!r} does not match the manifest board {board!r}")
+    bitstream = data.get("bitstream")
+    if not isinstance(bitstream, dict):
+        raise PublishError(f"{name}: bitstream must be an object with file and sha256")
+    if bitstream.get("file") != bitstream_file:
+        raise PublishError(
+            f"{name}: bitstream.file {bitstream.get('file')!r} does not match the manifest bitstream {bitstream_file!r}"
+        )
+    if bitstream.get("sha256") != bitstream_sha256:
+        raise PublishError(
+            f"{name}: bitstream.sha256 {bitstream.get('sha256')!r} does not match {bitstream_file} ({bitstream_sha256})"
+        )
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -147,6 +181,14 @@ def collect_artifacts(
 
         # Collect artifact files from the manifest
         artifact_dir = manifest_path.parent
+        if isinstance(manifest, NanopynqManifest):
+            npq_name = manifest.artifacts.metadata.file
+            if npq_name in artifact_urls:
+                # The check below needs the bytes, and a URL-published file is not read locally.
+                raise PublishError(f"{npq_name} (nanopynq metadata) cannot be published by URL; upload it instead")
+            npq_path = artifact_dir / npq_name
+            if is_single_filename(npq_name) and npq_path.is_file() and npq_path.stat().st_size > MAX_NPQ_BYTES:
+                raise PublishError(f"{npq_path} is larger than {MAX_NPQ_BYTES} bytes")
         filled: dict[str, str] = {}
         for ref in artifact_refs(manifest):
             # Checked before any read: a name that escapes the manifest directory
@@ -180,6 +222,17 @@ def collect_artifacts(
                 files[f"platform:{platform_key}:artifact-url:{ref.file}"] = url.encode()
             else:
                 files[f"platform:{platform_key}:artifact:{ref.file}"] = artifact_path.read_bytes()
+
+        if isinstance(manifest, NanopynqManifest):
+            bitstream = manifest.artifacts.bitstream
+            npq_name = manifest.artifacts.metadata.file
+            check_npq(
+                files[f"platform:{platform_key}:artifact:{npq_name}"],
+                name=f"{manifest_rel.rsplit('/', 1)[0]}/{npq_name}",
+                board=manifest.board,
+                bitstream_file=bitstream.file,
+                bitstream_sha256=filled.get(bitstream.file, bitstream.sha256),
+            )
 
         if filled:
             if manifest.attestation is not None:
@@ -241,7 +294,8 @@ def promote_platforms(files: Mapping[str, bytes], promotions: Mapping[str, str])
     disk are not touched.
 
     A manifest with an attestation cannot be promoted: rewriting ``board``
-    changes the bytes its signature covers.
+    changes the bytes its signature covers. Neither can a nanopynq manifest:
+    its ``.npq`` names the board too and is not rewritten.
     """
     index = yaml.safe_load(files["index"])
     targets = list(promotions.values())
@@ -268,6 +322,12 @@ def promote_platforms(files: Mapping[str, bytes], promotions: Mapping[str, str])
                 msg = (
                     f"Cannot promote {platform_id}: its manifest is signed (attestation) and promotion "
                     "rewrites it. Promote before signing, or push without promotion."
+                )
+                raise PublishError(msg)
+            if manifest.get("runtime") == "nanopynq":
+                msg = (
+                    f"Cannot promote {platform_id}: its .npq names the board, so it would no longer match the "
+                    "manifest. Rebuild the .npq for the target board and push that platform, or push without promotion."
                 )
                 raise PublishError(msg)
             manifest["board"] = new_id.split("/", 1)[0]

@@ -154,6 +154,12 @@ def push_cmd(
     # The SDK promotes every custom-* platform, so promotion is offered only when all
     # of them are axi-only and share one device family.
     custom = [info for info in infos if info.board_id.startswith("custom-")]
+    # A nanopynq .npq names the board and is not rewritten, so such a design is never offered promotion.
+    if any(info.runtime == "nanopynq" for info in custom):
+        if auto_yes:
+            click.echo("--yes cannot promote a nanopynq platform: its .npq names the board", err=True)
+            exit_with(FailureKind.GENERIC)
+        custom = []
     families = {info.device_family or _family_from_custom_board(info.board_id) for info in custom}
     promotable = bool(custom) and all(info.design_portability == "axi-only" for info in custom)
     if auto_yes and infos and not (promotable or all(info.design_portability == "axi-only" for info in infos)):

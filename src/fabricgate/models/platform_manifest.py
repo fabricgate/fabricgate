@@ -3,7 +3,7 @@
 Supports four runtimes via a discriminated union on the ``runtime`` field:
 - ``pynq``: PYNQ Overlay-based designs
 - ``linux-fpgamgr``: Linux FPGA Manager designs
-- ``nanopynq``: MCU + external FPGA (Phase 3)
+- ``nanopynq``: small FPGA boards driven from a host or MCU, with a ``.npq`` design file (Phase 3)
 - ``programmer``: bitstream written by a host-side programming tool
 """
 
@@ -39,9 +39,9 @@ logger = logging.getLogger(__name__)
 KNOWN_BITSTREAM_EXTENSIONS: dict[str, frozenset[str]] = {
     "pynq": frozenset({".bit"}),
     "linux-fpgamgr": frozenset({".bit", ".bin"}),
-    # platform-manifest-schema.md §5.2: nanopynq's format is `.bin` (raw
-    # bitstream), not `.bit` — so `.bit` should surface the ADR-011 warning.
-    "nanopynq": frozenset({".bin"}),
+    # platform-manifest-schema.md §5.2: raw `.bin` (iCE40) and Gowin `.fs` (Tang Nano);
+    # not `.bit`, so `.bit` surfaces the ADR-011 warning.
+    "nanopynq": frozenset({".bin", ".fs"}),
     # Xilinx `.bit`/`.bin`, Lattice `.bin`, Gowin `.fs`, Intel `.rbf`.
     "programmer": frozenset({".bit", ".bin", ".fs", ".rbf"}),
 }
@@ -310,37 +310,21 @@ class LinuxFpgamgrManifest(_ManifestValidators, FabricGateModel):
 # Runtime: nanopynq (Phase 3)
 # ---------------------------------------------------------------------------
 
-
-class Register(FabricGateModel):
-    """Register definition for nanopynq IP block."""
-
-    offset: str
-    width: int
-
-
-class Stream(FabricGateModel):
-    """Stream definition for nanopynq IP block."""
-
-    dir: str
-    mtu: int
-
-
-class IpBlock(FabricGateModel):
-    """IP block definition (replaces .hwh for MCU context)."""
-
-    base: str
-    registers: dict[str, Register] = Field(default_factory=dict)
-    streams: dict[str, Stream] = Field(default_factory=dict)
+# Fields of the nanopynq manifest before its metadata moved to the ``.npq`` artifact.
+_LEGACY_NANOPYNQ_FIELDS = ("ips", "transport", "mtu", "mcu")
 
 
 class NanopynqArtifacts(FabricGateModel):
     """Artifact set for the ``nanopynq`` runtime.
 
-    A fabricgate / nanopynq convention, not an external standard: the manifest's
-    ``ips`` field stands in for ``.hwh`` (platform-manifest-schema.md §5).
+    ``metadata`` is the nanopynq design file (``.npq``, JSON) paired with the bitstream:
+    IP and register definitions, host link settings and the design ID. Its format is
+    defined by nanopynq, and FabricGate does not interpret it beyond the publish-time
+    consistency check (platform-manifest-schema.md §5), as with ``.hwh`` for ``pynq``.
     """
 
     bitstream: ArtifactRef
+    metadata: ArtifactRef
 
 
 class NanopynqManifest(_ManifestValidators, FabricGateModel):
@@ -358,10 +342,6 @@ class NanopynqManifest(_ManifestValidators, FabricGateModel):
     device_family: str | None = None
     design_ref: DesignRef
     artifacts: NanopynqArtifacts
-    transport: str
-    mtu: int
-    ips: dict[str, IpBlock] = Field(default_factory=dict)
-    mcu: str | None = None
     bitstream_type: str | None = Field(
         default=None,
         pattern=r"^(shell|partial)$",
@@ -373,6 +353,30 @@ class NanopynqManifest(_ManifestValidators, FabricGateModel):
     attestation: Attestation | None = None
     interfaces: list[Interface] = Field(default_factory=list)
     dependencies: list[Dependency] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_layout(cls, data: object) -> object:
+        """Name the migration for a manifest in the old layout, which ``extra="ignore"`` would hide."""
+        if not isinstance(data, dict):
+            return data
+        artifacts = data.get("artifacts")
+        has_metadata = isinstance(artifacts, dict) and "metadata" in artifacts
+        legacy = [name for name in _LEGACY_NANOPYNQ_FIELDS if name in data]
+        if legacy and not has_metadata:
+            raise ValueError(
+                f"nanopynq manifest uses the removed field(s) {', '.join(legacy)}: the nanopynq manifest "
+                "now declares the design's .npq file as artifacts.metadata instead of ips / transport / mtu / mcu"
+            )
+        return data
+
+    @model_validator(mode="after")
+    def warn_unknown_metadata_extension(self) -> Self:
+        """Warn (never reject, as for the bitstream) when the metadata file is not ``.npq``."""
+        filename = self.artifacts.metadata.file
+        if posixpath.splitext(filename)[1].lower() != ".npq":
+            logger.warning("nanopynq metadata file '%s' does not have the '.npq' extension — accepted anyway", filename)
+        return self
 
 
 # ---------------------------------------------------------------------------

@@ -307,9 +307,12 @@ Published: myns/my-design:1.0.0 (1 platform)
 | 非 TTY（CI/パイプライン） | 自動 N（プロンプトなし）、メッセージのみ出力 |
 | `fabricgate push --yes` フラグ | 強制 y（AXI-only プラットフォームのみ適用） |
 | `fabricgate push --yes` + board-specific デザイン | エラー：`--yes requires axi-only design` |
+| `custom-*` の `nanopynq` プラットフォームを含む | 昇格を提案しない（`.npq` がボードの名前を持ち、書き換えないため）。`--yes` はエラー（exit 1）。SDK の `board_override` も exit 3 で断る。昇格先のボードの名前で `.npq` を作り直して push する |
 | 複数の `custom-*` プラットフォーム | 全て axi-only かつ同じ device family のときだけ昇格を提案し、まとめて昇格する。`--yes` で family が異なる、または昇格先が他のプラットフォームと同じ ID になる場合はエラー |
 
 `custom-*` でない通常ボード、`design_portability: board-specific`、または `io-constrained` の場合はプロンプト不要。
+
+**nanopynq の `.npq`:** `nanopynq` のプラットフォームでは、`artifacts.metadata` の `.npq` が manifest とビットストリームに対応しているかを、送る前に確かめる（platform-manifest-schema.md §5.2: 1 MiB 以下の UTF-8 の JSON オブジェクトで、`format` が `nanopynq-design/` で始まり、`board` と `bitstream.file` / `bitstream.sha256` が manifest と一致する。先頭の BOM は許す。sha256 はプレースホルダーを置き換えた後の値と比べる）。それ以外の項目は見ない。合わなければ何も送らずに exit 3。`.npq` は `--artifact-url` で公開できない（exit 3）。
 
 **プレースホルダー SHA-256:**
 
@@ -346,11 +349,11 @@ $ fabricgate push ./my-design/ \
 
 ### 3.2b `fabricgate build`
 
-HWH ファイルから Platform Manifest と Design Index を自動生成する。
+HWH ファイル（nanopynq では `.npq` ファイル）から Platform Manifest と Design Index を自動生成する。
 
 ```
 fabricgate build <directory> [--namespace <ns>] [--version <semver>] [--tags <tag,...>]
-                     [--hwh <path>] [--output <dir>] [--dry-run]
+                     [--hwh <path> | --npq <path>] [--output <dir>] [--dry-run]
 ```
 
 **Arguments:**
@@ -364,6 +367,7 @@ fabricgate build <directory> [--namespace <ns>] [--version <semver>] [--tags <ta
 | `--version` | SemVer バージョン（省略時はインタラクティブに入力） |
 | `--tags` | カンマ区切りタグ（例: `dma,axi,zynq`） |
 | `--hwh <path>` | `.hwh` ファイルを明示指定する（ディレクトリの検索はしない）。複数 HWH ファイルが見つかった場合は必須 |
+| `--npq <path>` | nanopynq のプラットフォームを、指定した `.npq` ファイルから作る（HWH は読まず、ディレクトリの検索もしない）。下記「nanopynq（`--npq`）」。`--hwh` と同時には使えない |
 | `--output <dir>` | 出力先ディレクトリ（デフォルト: カレントディレクトリに `<design_slug>/`） |
 | `--dry-run` | ファイルを書き出さずに生成内容をプレビューする |
 
@@ -391,9 +395,11 @@ fabricgate build <directory> [--namespace <ns>] [--version <semver>] [--tags <ta
    - デザイン名に `/` が無い場合は `--namespace` の値を前に付ける。`--namespace` も無ければ `Namespace` を追加で尋ねる
    - `<namespace>/<design>`（英小文字・数字・ハイフン）でない名前は、エラーを表示して再入力を求める
    - SemVer でないバージョン（`v1.0`、`1.0` など）も、エラーを表示して再入力を求める
-   - Runtime は `pynq` と `linux-fpgamgr` から選ぶ。`nanopynq` の manifest は HWH から決められない `transport` と `mtu` が必須なので、build では生成しない（platform-manifest-schema.md §5 に沿って手で書く）。`programmer` も build では生成しない。HWH を出さないツールチェーン（Gowin など）のデザインが主な対象なので、platform-manifest-schema.md §6 に沿って手で書く
+   - Runtime は `pynq` と `linux-fpgamgr` から選ぶ。`nanopynq` は HWH からではなく `--npq` で作る（下記）。`programmer` も build では生成しない。HWH を出さないツールチェーン（Gowin など）のデザインが主な対象なので、platform-manifest-schema.md §6 に沿って手で書く
 7. 生成した index と manifest を push と同じ検証（`DesignIndex` と Platform Manifest のスキーマ）に通す。通らなければ何も書かずに exit 3 で終わる（例: タグが 10 個を超える、説明が 200 文字を超える）。`--dry-run` でも同じ
 8. `fabricgate-index.yaml` と `<board_id>/<runtime>/manifest.yaml` を出力する。`pynq` では manifest が hwh を宣言するので、パースした HWH を manifest と同じディレクトリに `design.hwh` としてコピーする（`linux-fpgamgr` の manifest には hwh が無いのでコピーしない）。manifest は bitstream を `design.bit` として宣言するので、push の前にそのパスへ bitstream を置く。アーティファクトの sha256 はプレースホルダーのままでよい（push が埋める。§3.2）
+
+**nanopynq（`--npq`）:** `.npq` の `board` をボード、`bitstream.file`（`.npq` と同じディレクトリのファイル）をビットストリームとし、runtime は `nanopynq` に決まる（Runtime は尋ねない）。名前・バージョン・説明・タグは上と同じく尋ねる。書く前に push と同じ `.npq` の確認（platform-manifest-schema.md §5.2）をビットストリームの実際の sha256 で行い、通らなければ exit 3。manifest は bitstream と `metadata`（`.npq`）を宣言し、両方のファイルを manifest と同じディレクトリにコピーするので、そのまま push できる。Board DB に載っているボードなら `device_family` も埋める。
 
 **Behavior:**
 

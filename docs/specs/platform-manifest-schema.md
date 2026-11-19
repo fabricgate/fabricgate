@@ -255,12 +255,12 @@ bitstream のコンテナ形式に**型次元（enum フィールド）は存在
 |---------|-----------|
 | `pynq` | `.bit` |
 | `linux-fpgamgr` | `.bit`, `.bin` |
-| `nanopynq` | `.bin` |
+| `nanopynq` | `.bin`, `.fs` |
 | `programmer` | `.bit`, `.bin`, `.fs`, `.rbf` |
 
 実装: `fabricgate.models.platform_manifest.KNOWN_BITSTREAM_EXTENSIONS`
 
-> **注**: ADR-011 の allowlist 例では `nanopynq` → `.bit` としているが、本スキーマ §5.2/§5.3 の通り nanopynq の形式は raw bitstream の `.bin` であり `.bit` ではない（iCE40 等）。運用値の allowlist は §5.2 に従い `.bin` のみとし、`.bit` のアップロードには ADR-011 の warning を出す（warning のみ・リジェクトしない）。
+> **注**: ADR-011 の allowlist 例では `nanopynq` → `.bit` としているが、本スキーマ §5.2 の通り nanopynq の形式は iCE40 の raw bitstream `.bin` と Gowin（Tang Nano）の `.fs` であり `.bit` ではない。運用値の allowlist は §5.2 に従い `.bin` と `.fs` とし、`.bit` のアップロードには ADR-011 の warning を出す（warning のみ・リジェクトしない）。
 
 #### デバイスファミリ × runtime × 期待形式マトリクス（知識。契約ではない）
 
@@ -270,6 +270,7 @@ bitstream のコンテナ形式に**型次元（enum フィールド）は存在
 | Zynq-7000 | `linux-fpgamgr` | `.bin` | fpga_manager は Bootgen 変換した `.bin` が典型 |
 | Zynq UltraScale+ | `linux-fpgamgr` | `.bit` / `.bin` | カーネル・ボード構成に依存 |
 | iCE40（pico-ice 等） | `nanopynq` | `.bin` | raw bitstream（§5.2） |
+| Gowin（Tang Nano 等） | `nanopynq` | `.fs` | openFPGALoader 等で書き込む（§5.2） |
 | Xilinx（7 シリーズ、Linux を使わない Zynq 等） | `programmer` | `.bit` / `.bin` | Vivado Hardware Manager / openFPGALoader 等で書き込む |
 | iCE40 / ECP5 | `programmer` | `.bin`（ECP5 は `.bit` も） | iceprog / openFPGALoader 等 |
 | Gowin（GW1N / GW1NSR 等） | `programmer` | `.fs` | Gowin Programmer / openFPGALoader 等 |
@@ -560,84 +561,77 @@ interfaces:
 
 ## 5. Runtime: `nanopynq` (Phase 3 — Forward Reference)
 
-For MCU + external FPGA configurations (e.g., RP2040 + iCE40).
+For small FPGA boards (e.g. Tang Nano, pico-ice) that the nanopynq runtime drives from a host PC over USB, or from
+an MCU.
 
-> **Note — fabricgate's own convention**: the `nanopynq` artifact set (a raw `.bin` bitstream, with the
-> manifest's `ips` field standing in for `.hwh`) is a convention defined by fabricgate and the nanopynq
-> project. Unlike `pynq` (AMD/Xilinx PYNQ) and `linux-fpgamgr` (Linux FPGA Manager), it rests on no vendor or
-> kernel documentation, and no external standard for MicroPython-style FPGA runtimes was found as of 2026-06.
+> **Note — fabricgate's own convention**: the `nanopynq` artifact set (a bitstream plus the nanopynq design file
+> `.npq`) is a convention defined by fabricgate and the nanopynq project. Unlike `pynq` (AMD/Xilinx PYNQ) and
+> `linux-fpgamgr` (Linux FPGA Manager), it rests on no vendor or kernel documentation, and no external standard for
+> MicroPython-style FPGA runtimes was found as of 2026-06.
 
 ### 5.1 Schema
 
 ```yaml
 schema: fabricgate-platform/v1
 runtime: nanopynq
-board: <board_id>               # Board DB canonical (e.g., "pico-ice")
-device_family: <string>         # Derived from Board DB (e.g., "ice40up5k")
+board: <board_id>               # e.g. "tangnano9k", "pico-ice"
+device_family: <string>         # Optional; derived from Board DB when the board is listed
 design_ref: <namespace>/<design>:<version>
 
 artifacts:
   bitstream:
-    file: <filename>.bin
+    file: <filename>.<fs|bin>
+    sha256: <64-hex>
+  metadata:                     # nanopynq design file (.npq)
+    file: <filename>.npq
     sha256: <64-hex>
 
-# MCU-specific configuration
-transport: <spi|pio|uart>        # MCU-to-FPGA communication method
-mtu: <int>                       # Max transfer unit in bytes
-
-# IP definitions (replaces .hwh for MCU context)
-ips:
-  <ip-name>:
-    base: <hex-string>
-    registers:
-      <reg-name>: { offset: <hex>, width: <int> }
-    streams:
-      <stream-name>: { dir: <read|write>, mtu: <int> }
-
-# Optional
-mcu: <string>                    # MCU model (e.g., "rp2040")
-design_portability: <string>    # "axi-only" | "board-specific" | "io-constrained" (fabricgate build auto-detected)
-
+# Optional (common fields)
+design_portability: <string>
 interfaces: [ ... ]
 ```
 
-### 5.2 Key Differences from Linux Runtimes
+### 5.2 Required Artifacts
 
-- No `.hwh` — IP metadata is embedded directly as `ips` field
-- No `.dtbo` — no Linux device tree
-- No kernel modules — MCU runs MicroPython or bare-metal
-- `transport` field declares physical link type
-- Binary format is `.bin` (raw bitstream), not `.bit` (Vivado format)
+| Artifact | Required | Purpose |
+|----------|----------|---------|
+| `bitstream` | Yes | FPGA configuration binary: Gowin `.fs` (Tang Nano) or raw `.bin` (iCE40). Not `.bit` |
+| `metadata` | Yes | nanopynq design file (`.npq`, JSON): IP and register definitions, host link settings, design ID |
+
+- The `.npq` plays the role of `.hwh` for `pynq`: its format is defined by nanopynq (its `format` field, e.g.
+  `nanopynq-design/1`, names the revision), and FabricGate does not interpret it. A `metadata` file name that does
+  not end in `.npq` gets a warning, not an error.
+- `fabricgate push` checks only that the `.npq` belongs to this manifest and bitstream: it is a UTF-8 JSON object
+  (a leading BOM is allowed) of at most 1 MiB, `format` is a string starting with `nanopynq-design/`, `board`
+  equals the manifest `board`, and `bitstream.file` / `bitstream.sha256` equal the manifest's
+  `artifacts.bitstream`. Other fields (`link`, `design_id`, `ips`, ...) are not checked. The `.npq` cannot be
+  published by URL (`--artifact-url`).
+- No `.dtbo` and no kernel modules.
+- Until 0.6.0 the manifest itself carried `ips`, `transport`, `mtu` and `mcu`. These are removed; a manifest that
+  still has them and no `artifacts.metadata` is rejected with a message naming the migration.
 
 ### 5.3 Example
 
 ```yaml
 schema: fabricgate-platform/v1
 runtime: nanopynq
-board: pico-ice
-device_family: ice40up5k
-design_ref: fabricgate/blink:1.0.0
+board: tangnano9k
+design_ref: fabricgate/base:1.0.0
 
 artifacts:
   bitstream:
-    file: blink.bin
+    file: base.fs
+    sha256: "0e15164811e398367ddab57c192050994d22d441b66fed5982290182d8e61ef8"
+  metadata:
+    file: base.npq
     sha256: "2233445522334455223344552233445522334455223344552233445522334455"
+```
 
-transport: spi
-mtu: 1024
-mcu: rp2040
+### 5.4 Usage Pattern
 
-ips:
-  gpio0:
-    base: "0x0000"
-    registers:
-      LED_CTRL: { offset: "0x00", width: 8 }
-      LED_STATUS: { offset: "0x04", width: 8 }
-
-interfaces:
-  - name: gpio0
-    type: gpio
-    description: "LED GPIO controller"
+```bash
+fabricgate pull fabricgate/base:1.0.0 --platform tangnano9k/nanopynq --output base
+openFPGALoader -b tangnano9k base/base.fs    # then a nanopynq client reads base/base.npq
 ```
 
 ---

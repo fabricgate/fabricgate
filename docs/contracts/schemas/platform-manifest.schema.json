@@ -153,35 +153,6 @@
       "title": "Interface",
       "type": "object"
     },
-    "IpBlock": {
-      "additionalProperties": false,
-      "description": "IP block definition (replaces .hwh for MCU context).",
-      "properties": {
-        "base": {
-          "title": "Base",
-          "type": "string"
-        },
-        "registers": {
-          "additionalProperties": {
-            "$ref": "#/$defs/Register"
-          },
-          "title": "Registers",
-          "type": "object"
-        },
-        "streams": {
-          "additionalProperties": {
-            "$ref": "#/$defs/Stream"
-          },
-          "title": "Streams",
-          "type": "object"
-        }
-      },
-      "required": [
-        "base"
-      ],
-      "title": "IpBlock",
-      "type": "object"
-    },
     "KernelModule": {
       "additionalProperties": false,
       "description": "Kernel module reference (linux-fpgamgr).",
@@ -404,14 +375,18 @@
     },
     "NanopynqArtifacts": {
       "additionalProperties": false,
-      "description": "Artifact set for the ``nanopynq`` runtime.\n\nA fabricgate / nanopynq convention, not an external standard: the manifest's\n``ips`` field stands in for ``.hwh`` (platform-manifest-schema.md §5).",
+      "description": "Artifact set for the ``nanopynq`` runtime.\n\n``metadata`` is the nanopynq design file (``.npq``, JSON) paired with the bitstream:\nIP and register definitions, host link settings and the design ID. Its format is\ndefined by nanopynq, and FabricGate does not interpret it beyond the publish-time\nconsistency check (platform-manifest-schema.md §5), as with ``.hwh`` for ``pynq``.",
       "properties": {
         "bitstream": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "metadata": {
           "$ref": "#/$defs/ArtifactRef"
         }
       },
       "required": [
-        "bitstream"
+        "bitstream",
+        "metadata"
       ],
       "title": "NanopynqArtifacts",
       "type": "object"
@@ -455,33 +430,6 @@
         },
         "artifacts": {
           "$ref": "#/$defs/NanopynqArtifacts"
-        },
-        "transport": {
-          "title": "Transport",
-          "type": "string"
-        },
-        "mtu": {
-          "title": "Mtu",
-          "type": "integer"
-        },
-        "ips": {
-          "additionalProperties": {
-            "$ref": "#/$defs/IpBlock"
-          },
-          "title": "Ips",
-          "type": "object"
-        },
-        "mcu": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Mcu"
         },
         "bitstream_type": {
           "anyOf": [
@@ -577,9 +525,7 @@
       "required": [
         "board",
         "design_ref",
-        "artifacts",
-        "transport",
-        "mtu"
+        "artifacts"
       ],
       "title": "NanopynqManifest",
       "type": "object"
@@ -943,26 +889,6 @@
       "title": "PynqManifest",
       "type": "object"
     },
-    "Register": {
-      "additionalProperties": false,
-      "description": "Register definition for nanopynq IP block.",
-      "properties": {
-        "offset": {
-          "title": "Offset",
-          "type": "string"
-        },
-        "width": {
-          "title": "Width",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "offset",
-        "width"
-      ],
-      "title": "Register",
-      "type": "object"
-    },
     "ShellDependency": {
       "additionalProperties": false,
       "description": "PR bitstream static shell dependency (exact version match only).\n\n``sha256`` is the mandatory ADR-009 pin: the SHA-256 of the referenced\nshell's distributed bitstream artifact on the same platform.",
@@ -991,26 +917,6 @@
         "sha256"
       ],
       "title": "ShellDependency",
-      "type": "object"
-    },
-    "Stream": {
-      "additionalProperties": false,
-      "description": "Stream definition for nanopynq IP block.",
-      "properties": {
-        "dir": {
-          "title": "Dir",
-          "type": "string"
-        },
-        "mtu": {
-          "title": "Mtu",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "dir",
-        "mtu"
-      ],
-      "title": "Stream",
       "type": "object"
     },
     "ToolRequirement": {
