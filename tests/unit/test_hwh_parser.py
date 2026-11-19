@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -946,7 +947,7 @@ class TestBuildOutputIsPushable:
         assert list(artifacts) == ["bitstream"]
 
     def test_nanopynq_is_not_offered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """#152: build cannot fill nanopynq's transport and mtu, so the runtime is asked again."""
+        """#152: nanopynq is built from a .npq (--npq), not from an HWH, so the runtime is asked again."""
         stdin = "myns/my-design\n1.0.0\nnanopynq\npynq\n\n\n"
         result = _invoke_build(tmp_path, monkeypatch, _ZCU104_INFO, [], stdin)
         assert result.exit_code == 0, result.output
@@ -1003,3 +1004,103 @@ def test_parse_hwh_refuses_entities_as_a_parse_error(tmp_path: Path) -> None:
         parse_hwh(hwh)
     with pytest.raises(HwhParseError):
         parse_hwh(tmp_path / "missing.hwh")
+
+
+# ---------------------------------------------------------------------------
+# build --npq (nanopynq)
+# ---------------------------------------------------------------------------
+
+_FS = b"gowin-fs-bitstream"
+
+
+def _write_npq(directory: Path, **overrides: object) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "base.fs").write_bytes(_FS)
+    data: dict[str, object] = {
+        "format": "nanopynq-design/1",
+        "board": "tangnano9k",
+        "bitstream": {"file": "base.fs", "sha256": hashlib.sha256(_FS).hexdigest()},
+        "ips": {"sys": {}},
+    }
+    data.update(overrides)
+    npq = directory / "base.npq"
+    npq.write_text(json.dumps(data))
+    return npq
+
+
+def _invoke_npq_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, npq: Path, *args: str) -> Result:
+    monkeypatch.chdir(tmp_path)
+    return CliRunner().invoke(
+        build_cmd, [str(npq.parent), "--npq", str(npq), "--version", "1.0.0", *args], input="myns/base\n\n\n\n"
+    )
+
+
+class TestBuildNpq:
+    def test_builds_a_platform_that_push_accepts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        npq = _write_npq(tmp_path / "gowin")
+        result = _invoke_npq_build(tmp_path, monkeypatch, npq)
+        assert result.exit_code == 0, result.output
+        assert "Runtime" not in result.output
+
+        platform_dir = tmp_path / "base" / "tangnano9k" / "nanopynq"
+        assert sorted(p.name for p in platform_dir.iterdir()) == ["base.fs", "base.npq", "manifest.yaml"]
+        manifest = yaml.safe_load((platform_dir / "manifest.yaml").read_text())
+        assert manifest["runtime"] == "nanopynq"
+        assert manifest["board"] == "tangnano9k"
+        assert {k: v["file"] for k, v in manifest["artifacts"].items()} == {
+            "bitstream": "base.fs",
+            "metadata": "base.npq",
+        }
+        assert "design_portability" not in manifest
+
+        index, _ = load_design_index(tmp_path / "base")
+        files = collect_artifacts(tmp_path / "base", index)
+        assert "platform:tangnano9k/nanopynq:artifact:base.npq" in files
+
+    def test_fills_device_family_for_a_listed_board(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        npq = _write_npq(tmp_path / "ice", board="pico-ice")
+        result = _invoke_npq_build(tmp_path, monkeypatch, npq)
+        assert result.exit_code == 0, result.output
+        manifest = yaml.safe_load((tmp_path / "base" / "pico-ice" / "nanopynq" / "manifest.yaml").read_text())
+        assert manifest["device_family"] == "ice40up5k"
+
+    def test_dry_run_writes_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        npq = _write_npq(tmp_path / "gowin")
+        result = _invoke_npq_build(tmp_path, monkeypatch, npq, "--dry-run")
+        assert result.exit_code == 0, result.output
+        assert "(dry-run) base/tangnano9k/nanopynq/base.npq" in result.output
+        assert not (tmp_path / "base").exists()
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"bitstream": {"file": "base.fs", "sha256": "0" * 64}}, "bitstream.sha256"),
+            ({"format": "other/1"}, "nanopynq-design/"),
+            ({"bitstream": {"file": "missing.fs", "sha256": "0" * 64}}, "not found"),
+            ({"bitstream": {"file": "../base.fs", "sha256": "0" * 64}}, "needs a board and a bitstream.file"),
+            ({"board": None}, "needs a board and a bitstream.file"),
+        ],
+        ids=["sha256", "format", "missing-bitstream", "path", "no-board"],
+    )
+    def test_refuses_an_npq_push_would_reject(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, object], message: str
+    ) -> None:
+        npq = _write_npq(tmp_path / "gowin", **overrides)
+        result = _invoke_npq_build(tmp_path, monkeypatch, npq)
+        assert result.exit_code == 3, result.output
+        assert message in result.output
+        assert not (tmp_path / "base").exists()
+
+    def test_not_json_exits_3(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        npq = _write_npq(tmp_path / "gowin")
+        npq.write_text("{")
+        result = _invoke_npq_build(tmp_path, monkeypatch, npq)
+        assert result.exit_code == 3, result.output
+
+    def test_npq_and_hwh_are_exclusive(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        npq = _write_npq(tmp_path / "gowin")
+        hwh = tmp_path / "gowin" / "design.hwh"
+        hwh.write_text(_make_hwh())
+        result = _invoke_npq_build(tmp_path, monkeypatch, npq, "--hwh", str(hwh))
+        assert result.exit_code == 2
+        assert "cannot be used together" in result.output
