@@ -4121,9 +4121,7 @@ def test_push_does_not_offer_promotion_for_a_nanopynq_platform(monkeypatch, tmp_
     monkeypatch.setattr(
         "fabricgate.cli.commands.push.sdk_api.push", lambda *_a, **kw: captured_kwargs.update(kw) or _PUSH_RESULT
     )
-    monkeypatch.setattr(
-        "fabricgate.cli.commands.push._detect_platforms", lambda _: [_CUSTOM_AXI_INFO, _CUSTOM_NANOPYNQ_INFO]
-    )
+    monkeypatch.setattr("fabricgate.cli.commands.push._detect_platforms", lambda _: [_CUSTOM_NANOPYNQ_INFO])
     monkeypatch.setattr("fabricgate.cli.commands.push._is_tty", lambda: True)
 
     result = CliRunner().invoke(main, ["push", str(tmp_path)])
