@@ -307,6 +307,7 @@ Published: myns/my-design:1.0.0 (1 platform)
 | 非 TTY（CI/パイプライン） | 自動 N（プロンプトなし）、メッセージのみ出力 |
 | `fabricgate push --yes` フラグ | 強制 y（AXI-only プラットフォームのみ適用） |
 | `fabricgate push --yes` + board-specific デザイン | エラー：`--yes requires axi-only design` |
+| `custom-*` の `nanopynq` プラットフォームを含む | 昇格を提案しない（`.npq` がボードの名前を持ち、書き換えないため）。`--yes` はエラー（exit 1）。SDK の `board_override` も exit 3 で断る。昇格先のボードの名前で `.npq` を作り直して push する |
 | 複数の `custom-*` プラットフォーム | 全て axi-only かつ同じ device family のときだけ昇格を提案し、まとめて昇格する。`--yes` で family が異なる、または昇格先が他のプラットフォームと同じ ID になる場合はエラー |
 
 `custom-*` でない通常ボード、`design_portability: board-specific`、または `io-constrained` の場合はプロンプト不要。

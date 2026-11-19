@@ -4098,3 +4098,36 @@ def test_search_passes_the_limit_to_the_sdk(monkeypatch) -> None:
     monkeypatch.setattr("fabricgate.cli.commands.search.sdk_api.search", _fake_search)
     assert CliRunner().invoke(main, ["search", "x", "--limit", "50"]).exit_code == 0
     assert seen["limit"] == 50
+
+
+_CUSTOM_NANOPYNQ_INFO = _PlatformInfo(
+    board_id="custom-gw1nr-9", runtime="nanopynq", device_family="gw1nr-9", design_portability="axi-only"
+)
+
+
+def test_push_yes_refuses_to_promote_a_nanopynq_platform(monkeypatch, tmp_path) -> None:
+    """The .npq names the board and push does not rewrite it, so promotion would publish a mismatch."""
+    monkeypatch.setattr("fabricgate.cli.commands.push.sdk_api.push", lambda *_a, **_kw: pytest.fail("pushed"))
+    monkeypatch.setattr("fabricgate.cli.commands.push._detect_platforms", lambda _: [_CUSTOM_NANOPYNQ_INFO])
+
+    result = CliRunner().invoke(main, ["push", str(tmp_path), "--yes"])
+
+    assert result.exit_code == 1
+    assert "--yes cannot promote a nanopynq platform" in result.output + result.stderr_bytes.decode()
+
+
+def test_push_does_not_offer_promotion_for_a_nanopynq_platform(monkeypatch, tmp_path) -> None:
+    captured_kwargs: dict = {}
+    monkeypatch.setattr(
+        "fabricgate.cli.commands.push.sdk_api.push", lambda *_a, **kw: captured_kwargs.update(kw) or _PUSH_RESULT
+    )
+    monkeypatch.setattr(
+        "fabricgate.cli.commands.push._detect_platforms", lambda _: [_CUSTOM_AXI_INFO, _CUSTOM_NANOPYNQ_INFO]
+    )
+    monkeypatch.setattr("fabricgate.cli.commands.push._is_tty", lambda: True)
+
+    result = CliRunner().invoke(main, ["push", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "instead?" not in result.output
+    assert captured_kwargs["board_override"] is None

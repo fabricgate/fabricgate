@@ -6359,3 +6359,33 @@ def test_push_legacy_nanopynq_manifest_names_the_migration(tmp_path: Path) -> No
     with pytest.raises(sdk_api.SDKError, match=r"artifacts\.metadata") as exc_info:
         sdk_api.push(tmp_path, registry="http://127.0.0.1:9/api/v1", token="unused")
     assert exc_info.value.code == ExitKind.INVALID
+
+
+def test_push_board_override_refuses_a_nanopynq_platform(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Promotion rewrites the manifest board but not the .npq, so it is refused before anything is sent."""
+    import importlib
+
+    platform_dir = tmp_path / "custom-gw1nr-9" / "nanopynq"
+    platform_dir.mkdir(parents=True)
+    (platform_dir / "base.fs").write_bytes(_NPQ_FS)
+    npq = (
+        '{"format": "nanopynq-design/1", "board": "custom-gw1nr-9", '
+        f'"bitstream": {{"file": "base.fs", "sha256": "{hashlib.sha256(_NPQ_FS).hexdigest()}"}}}}'
+    )
+    (platform_dir / "base.npq").write_text(npq)
+    (platform_dir / "manifest.yaml").write_text(
+        "runtime: nanopynq\nboard: custom-gw1nr-9\ndesign_ref: test-ns/blink:1.0.0\n"
+        f"artifacts:\n  bitstream: {{file: base.fs, sha256: {'a' * 64}}}\n"
+        f"  metadata: {{file: base.npq, sha256: {'a' * 64}}}\n"
+        "design_portability: axi-only\n"
+    )
+    (tmp_path / "fabricgate-index.yaml").write_text(
+        "schema: fabricgate-index/v1\nname: test-ns/blink\nversion: 1.0.0\n"
+        f"platforms:\n  - platform: custom-gw1nr-9/nanopynq\n    digest: sha256:{'a' * 64}\n"
+    )
+    push_module = importlib.import_module("fabricgate.sdk.designs.push")
+    monkeypatch.setattr(push_module, "RegistryClient", lambda *_a, **_kw: pytest.fail("contacted the registry"))
+
+    with pytest.raises(sdk_api.SDKError, match=r"Cannot promote custom-gw1nr-9/nanopynq: its \.npq names") as exc_info:
+        sdk_api.push(tmp_path, token="unused", board_override="generic-gw1nr-9", registry="http://127.0.0.1:9/api/v1")
+    assert exc_info.value.code == ExitKind.INVALID

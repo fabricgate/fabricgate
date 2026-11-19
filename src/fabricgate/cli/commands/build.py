@@ -25,6 +25,7 @@ from fabricgate.sdk.hwh_parser import HwhInfo, HwhParseError, ParsedInterface, f
 # Artifact file names the manifest stub declares, next to manifest.yaml.
 _BITSTREAM_FILE = "design.bit"
 _HWH_FILE = "design.hwh"
+_MANIFEST_FILE = "manifest.yaml"
 # Of the runtimes build offers, only pynq's manifest has an hwh artifact.
 _HWH_RUNTIME = "pynq"
 
@@ -316,7 +317,7 @@ def _read_npq_target(npq_path: Path) -> tuple[str, str]:
         if npq_path.stat().st_size > MAX_NPQ_BYTES:
             raise ValueError(f"larger than {MAX_NPQ_BYTES} bytes")
         data = json.loads(npq_path.read_bytes())
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         click.echo(f"Error: Cannot read {npq_path}: {exc}", err=True)
         exit_with(FailureKind.INVALID)
     board = data.get("board") if isinstance(data, dict) else None
@@ -324,6 +325,10 @@ def _read_npq_target(npq_path: Path) -> tuple[str, str]:
     bitstream_file = bitstream.get("file") if isinstance(bitstream, dict) else None
     if not isinstance(board, str) or not isinstance(bitstream_file, str) or not is_single_filename(bitstream_file):
         click.echo(f"Error: {npq_path} needs a board and a bitstream.file (a file name next to it)", err=True)
+        exit_with(FailureKind.INVALID)
+    if _MANIFEST_FILE in (npq_path.name, bitstream_file):
+        # Both are copied next to the generated manifest and would overwrite it.
+        click.echo(f"Error: neither the .npq nor its bitstream can be named {_MANIFEST_FILE}", err=True)
         exit_with(FailureKind.INVALID)
     return board, bitstream_file
 

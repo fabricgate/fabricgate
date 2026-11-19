@@ -68,7 +68,7 @@ def check_npq(content: bytes, *, name: str, board: str, bitstream_file: str, bit
     """
     try:
         data = json.loads(content)
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise PublishError(f"{name} is not valid JSON: {exc}") from None
     if not isinstance(data, dict):
         raise PublishError(f"{name} must be a JSON object")
@@ -294,7 +294,8 @@ def promote_platforms(files: Mapping[str, bytes], promotions: Mapping[str, str])
     disk are not touched.
 
     A manifest with an attestation cannot be promoted: rewriting ``board``
-    changes the bytes its signature covers.
+    changes the bytes its signature covers. Neither can a nanopynq manifest:
+    its ``.npq`` names the board too and is not rewritten.
     """
     index = yaml.safe_load(files["index"])
     targets = list(promotions.values())
@@ -321,6 +322,12 @@ def promote_platforms(files: Mapping[str, bytes], promotions: Mapping[str, str])
                 msg = (
                     f"Cannot promote {platform_id}: its manifest is signed (attestation) and promotion "
                     "rewrites it. Promote before signing, or push without promotion."
+                )
+                raise PublishError(msg)
+            if manifest.get("runtime") == "nanopynq":
+                msg = (
+                    f"Cannot promote {platform_id}: its .npq names the board, so it would no longer match the "
+                    "manifest. Rebuild the .npq for the target board and push that platform, or push without promotion."
                 )
                 raise PublishError(msg)
             manifest["board"] = new_id.split("/", 1)[0]

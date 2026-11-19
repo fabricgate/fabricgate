@@ -16,7 +16,7 @@ from fabricgate.cli.commands.build import (
     _resolve_board_id,
     build_cmd,
 )
-from fabricgate.client.publisher import collect_artifacts, load_design_index
+from fabricgate.client.publisher import MAX_NPQ_BYTES, collect_artifacts, load_design_index
 from fabricgate.models.board_db import BoardDb, BoardEntry
 from fabricgate.sdk.hwh_parser import (
     HwhInfo,
@@ -1104,3 +1104,44 @@ class TestBuildNpq:
         result = _invoke_npq_build(tmp_path, monkeypatch, npq, "--hwh", str(hwh))
         assert result.exit_code == 2
         assert "cannot be used together" in result.output
+
+
+def test_build_npq_nested_too_deeply_exits_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    npq = _write_npq(tmp_path / "gowin")
+    npq.write_bytes(b'{"a":' + b"[" * 200_000 + b"]" * 200_000 + b"}")
+    result = _invoke_npq_build(tmp_path, monkeypatch, npq)
+    assert result.exit_code == 3, result.output
+    assert "Cannot read" in result.output
+
+
+@pytest.mark.parametrize("where", ["npq", "bitstream"])
+def test_build_npq_refuses_files_named_manifest_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """Both files are copied next to the generated manifest.yaml, which they would overwrite."""
+    src = tmp_path / "gowin"
+    if where == "npq":
+        npq = _write_npq(src).rename(src / "manifest.yaml")
+    else:
+        (src.mkdir(parents=True))
+        (src / "manifest.yaml").write_bytes(_FS)
+        npq = _write_npq(src, bitstream={"file": "manifest.yaml", "sha256": hashlib.sha256(_FS).hexdigest()})
+    result = _invoke_npq_build(tmp_path, monkeypatch, npq)
+    assert result.exit_code == 3, result.output
+    assert "can be named manifest.yaml" in result.output
+    assert not (tmp_path / "base").exists()
+
+
+def test_build_npq_refuses_an_oversized_file_before_reading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    npq = _write_npq(tmp_path / "gowin")
+    npq.write_bytes(b" " * (MAX_NPQ_BYTES + 1))
+    original = Path.read_bytes
+
+    def _read_bytes(self: Path) -> bytes:
+        assert self.suffix != ".npq", "the oversized .npq was read"
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+    result = _invoke_npq_build(tmp_path, monkeypatch, npq)
+    assert result.exit_code == 3, result.output
+    assert "larger than" in result.output
