@@ -6,6 +6,8 @@ first shipped the change. Changes not yet in a tagged release are listed under
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
 ### Added
 
 - `PATCH /api/v1/namespaces/{namespace}` changes a namespace's display name, description or both after it is created (request model `NamespaceUpdateRequest`). Both fields are optional, with the limits of `POST /api/v1/namespaces`; a field that is omitted or `null` is left as it is, an empty `description` clears it, and a body with neither field is `422`. The caller must be an `owner` or `admin` member of the namespace or hold `platform:admin`; an API key is refused. The response is the namespace as `GET /api/v1/namespaces/{namespace}` returns it. The namespace name cannot be changed. No CLI command uses it yet. Existing endpoints are unchanged.
