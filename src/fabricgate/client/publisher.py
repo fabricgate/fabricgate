@@ -58,6 +58,7 @@ class PublishError(Exception):
 
 
 MAX_NPQ_BYTES = 1024 * 1024
+MAX_README_BYTES = 1024 * 1024  # the registry refuses a larger readme part (docs/specs/client-behavior.md)
 
 
 def check_npq(content: bytes, *, name: str, board: str, bitstream_file: str, bitstream_sha256: str) -> None:
@@ -167,7 +168,15 @@ def collect_artifacts(
         index_data = yaml.safe_load(files["index"])
     readme_path = project_dir / "README.md"
     if readme_path.is_file():
-        files["readme"] = readme_path.read_bytes()
+        # Checked here: push uploads the artifacts before the parts, so a refused readme would come too late.
+        readme = readme_path.read_bytes()
+        if len(readme) > MAX_README_BYTES:
+            raise PublishError(f"{readme_path} is larger than {MAX_README_BYTES} bytes")
+        try:
+            readme.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise PublishError(f"{readme_path} is not UTF-8: {exc}") from None
+        files["readme"] = readme
 
     for entry in index.platforms:
         platform_key = entry.platform  # e.g. "xc7z020/pynq"
