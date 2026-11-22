@@ -647,6 +647,37 @@ class TestPublisher:
         assert "platform:xc7z020/pynq:manifest" in files
         assert "platform:xc7z020/pynq:artifact:design.bit" in files
         assert "platform:xc7z020/pynq:artifact:design.hwh" in files
+        assert "readme" not in files
+
+    def test_collect_artifacts_sends_readme(self, tmp_path: Path) -> None:
+        """README.md next to the index is the readme part (docs/specs/cli-specification.md)."""
+        self._write_project(tmp_path)
+        (tmp_path / "README.md").write_bytes("# Blink\n\nSee the LED blink. ✓\n".encode())
+        idx, _ = load_design_index(tmp_path)
+        files = collect_artifacts(tmp_path, idx)
+        assert files["readme"] == "# Blink\n\nSee the LED blink. ✓\n".encode()
+
+    @pytest.mark.parametrize(
+        ("content", "message"),
+        [
+            ("日本語".encode("shift_jis"), "is not UTF-8"),
+            (b"a" * (1024 * 1024 + 1), "is larger than 1048576 bytes"),
+        ],
+        ids=["not-utf8", "too-large"],
+    )
+    def test_collect_artifacts_refuses_bad_readme(self, tmp_path: Path, content: bytes, message: str) -> None:
+        """Refused before anything is sent: push uploads the artifacts before the readme part."""
+        self._write_project(tmp_path)
+        (tmp_path / "README.md").write_bytes(content)
+        idx, _ = load_design_index(tmp_path)
+        with pytest.raises(PublishError, match=message):
+            collect_artifacts(tmp_path, idx)
+
+    def test_collect_artifacts_accepts_readme_at_the_limit(self, tmp_path: Path) -> None:
+        self._write_project(tmp_path)
+        (tmp_path / "README.md").write_bytes(b"a" * (1024 * 1024))
+        idx, _ = load_design_index(tmp_path)
+        assert len(collect_artifacts(tmp_path, idx)["readme"]) == 1024 * 1024
 
     def test_collect_missing_manifest(self, tmp_path: Path) -> None:
         idx_data = {

@@ -1230,6 +1230,25 @@ class TestPublishVersionArtifactUrl:
         index_part = next(p for p in parts if b'name="index"' in p)
         assert b'filename="index"' in index_part
 
+    def test_readme_is_sent_as_markdown(self) -> None:
+        """The registry accepts the ``readme`` part only as text/markdown or text/plain."""
+        seen: dict[str, bytes] = {}
+
+        def _handler(request: httpx2.Request) -> httpx2.Response:
+            seen["body"] = request.read()
+            return httpx2.Response(
+                200,
+                json={"name": "demo/blink", "version": "1.0.0", "platforms": ["xc7z020/pynq"], "published_at": _NOW},
+                request=request,
+            )
+
+        client = _make_client(httpx2.MockTransport(_handler))
+        client.publish_version("demo", "blink", "1.0.0", {"index": b"index-data", "readme": b"# Blink\n"})
+
+        readme_part = next(p for p in seen["body"].split(b"\r\n--") if b'name="readme"' in p)
+        assert b"Content-Type: text/markdown" in readme_part
+        assert b"# Blink\n" in readme_part
+
 
 # ---------------------------------------------------------------------------
 # URL path segments

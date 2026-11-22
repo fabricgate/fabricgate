@@ -256,11 +256,10 @@ def _transport_errors() -> Iterator[None]:
 
 
 def _part_content_type(field_name: str) -> str:
-    """Return the appropriate MIME type for a multipart field.
-
-    ``readme`` is included for future use when README upload is implemented.
-    """
-    if field_name in ("index", "readme") or field_name.endswith(":manifest"):
+    """Return the appropriate MIME type for a multipart field."""
+    if field_name == "readme":
+        return "text/markdown"
+    if field_name == "index" or field_name.endswith(":manifest"):
         return "application/x-yaml"
     return "application/octet-stream"
 
