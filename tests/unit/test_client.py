@@ -647,6 +647,15 @@ class TestPublisher:
         assert "platform:xc7z020/pynq:manifest" in files
         assert "platform:xc7z020/pynq:artifact:design.bit" in files
         assert "platform:xc7z020/pynq:artifact:design.hwh" in files
+        assert "readme" not in files
+
+    def test_collect_artifacts_sends_readme(self, tmp_path: Path) -> None:
+        """README.md next to the index is the readme part (docs/specs/cli-specification.md)."""
+        self._write_project(tmp_path)
+        (tmp_path / "README.md").write_bytes("# Blink\n\nSee the LED blink. ✓\n".encode())
+        idx, _ = load_design_index(tmp_path)
+        files = collect_artifacts(tmp_path, idx)
+        assert files["readme"] == "# Blink\n\nSee the LED blink. ✓\n".encode()
 
     def test_collect_missing_manifest(self, tmp_path: Path) -> None:
         idx_data = {

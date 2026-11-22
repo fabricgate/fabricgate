@@ -137,6 +137,7 @@ def collect_artifacts(
     Returns a mapping of ``{field_name: content}`` ready for multipart upload.
     Field names match the registry API contract:
     - ``index``                               → the design index YAML
+    - ``readme``                              → ``README.md`` next to the index, when present
     - ``platform:{pid}:manifest``             → each platform manifest
     - ``platform:{pid}:artifact:{file}``      → artifact files referenced in manifests
     - ``platform:{pid}:artifact-url:{file}``  → the https URL for a file in *artifact_urls*
@@ -164,6 +165,9 @@ def collect_artifacts(
     if index_path is not None:
         files["index"] = index_path.read_bytes()
         index_data = yaml.safe_load(files["index"])
+    readme_path = project_dir / "README.md"
+    if readme_path.is_file():
+        files["readme"] = readme_path.read_bytes()
 
     for entry in index.platforms:
         platform_key = entry.platform  # e.g. "xc7z020/pynq"
