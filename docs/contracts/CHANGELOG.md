@@ -4,6 +4,9 @@ Sections are named after the `fabricgate` package release tag (`vX.Y.Z`) that
 first shipped the change. Changes not yet in a tagged release are listed under
 `[Unreleased]`.
 
+That tag is the version of these contracts. The OpenAPI documents keep
+`info.version` at `0.1.0`; it is not updated and carries no meaning.
+
 ## [Unreleased]
 
 ## [0.7.0] - 2026-11-20
