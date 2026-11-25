@@ -965,7 +965,7 @@ New shell version found: community/zcu104-shell:1.3.0
 ### 3.9 `fabricgate webhook`
 > **Not available yet.** The hosted registry does not implement these endpoints, so this
 > command group is hidden from `--help` and any call returns 404. Tracked in
-> [issue #6](https://github.com/harurun78/fabricgate/issues/6).
+> [issue #6](https://github.com/fabricgate/fabricgate/issues/6).
 
 
 Webhook（HTTP 通知）の管理コマンド。ネームスペース管理者が利用する。
