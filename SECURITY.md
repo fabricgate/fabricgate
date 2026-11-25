@@ -40,5 +40,7 @@ Out of scope: third-party dependencies (report upstream), social engineering, an
 Releases are published to PyPI from this repository via Trusted Publishing, and every wheel and sdist carries a GitHub build-provenance attestation. You can check a downloaded file with:
 
 ```sh
-gh attestation verify fabricgate-<version>-py3-none-any.whl --repo harurun78/fabricgate
+gh attestation verify fabricgate-<version>-py3-none-any.whl --repo fabricgate/fabricgate
 ```
+
+Releases up to 0.7.0 were built while this repository was `harurun78/fabricgate`; verify them with `--owner harurun78 --signer-workflow harurun78/fabricgate/.github/workflows/release.yaml` instead of `--repo`.

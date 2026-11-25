@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/fabricgate.svg)](https://pypi.org/project/fabricgate/)
 [![Python](https://img.shields.io/pypi/pyversions/fabricgate.svg)](https://pypi.org/project/fabricgate/)
-[![CI](https://github.com/harurun78/fabricgate/actions/workflows/ci.yaml/badge.svg)](https://github.com/harurun78/fabricgate/actions/workflows/ci.yaml)
+[![CI](https://github.com/fabricgate/fabricgate/actions/workflows/ci.yaml/badge.svg)](https://github.com/fabricgate/fabricgate/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Discover, pull and verify FPGA designs for your board — one command, any runtime.**
@@ -123,6 +123,14 @@ The registry server is operated as a hosted service and its implementation is no
 Every release is published from this repository via PyPI Trusted Publishing and carries a GitHub build-provenance attestation:
 
 ```sh
-pip download --no-deps fabricgate==0.6.0
-gh attestation verify fabricgate-0.6.0-py3-none-any.whl --repo harurun78/fabricgate
+pip download --no-deps fabricgate==<version>
+gh attestation verify fabricgate-<version>-py3-none-any.whl --repo fabricgate/fabricgate
+```
+
+Releases up to 0.7.0 were built before this repository moved from `harurun78/fabricgate` to `fabricgate/fabricgate`, and their attestations stay with the old owner:
+
+```sh
+pip download --no-deps fabricgate==0.7.0
+gh attestation verify fabricgate-0.7.0-py3-none-any.whl --owner harurun78 \
+  --signer-workflow harurun78/fabricgate/.github/workflows/release.yaml
 ```
